@@ -386,7 +386,7 @@ proc loop*(self: BitFinexWebSocket) {.async.} =
             await sleepAsync(WS_CONNECT_WAIT_TIME_MS)
             continue
 
-        notifyConnectAwaiters(self)            
+        notifyConnectAwaiters(self)
         await processUnsubscribeQueue(self)
 
         assert self.ws != nil

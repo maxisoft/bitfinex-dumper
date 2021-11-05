@@ -55,10 +55,14 @@ type
         callBackVersion: int64
 
 func hash*(x: OrderBookCollectorJobArgument): Hash =
-  result = x.symbol.hash !& x.precision.hash !& x.frequency.hash !& x.length.hash
-  result = !$result
+    ## Compute the hash of an OrderBookCollectorJobArgument.
+    ## Note that we ignore resamplePeriod and debounceTimeMs.
+    result = x.symbol.hash !& x.precision.hash !& x.frequency.hash !& x.length.hash
+    result = !$result
 
 func `==`*(left: OrderBookCollectorJobArgument, right: OrderBookCollectorJobArgument): bool =
+    ## Is two OrderBookCollectorJobArgument equals ?
+    ## Note that we ignore resamplePeriod and debounceTimeMs.
     if left.symbol != right.symbol:
       return false
     if left.precision != right.precision:

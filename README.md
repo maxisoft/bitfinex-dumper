@@ -3,11 +3,11 @@ Track and save bitfinex's order books of all available pairs.
 
 ## Description
 This project builds an orderbooks historical sqlite database.  
-Such database may allow one to develop investment strategies, charts, analysis, ... without relying on external services (ie just from your own and raw data from cex).  
-This is a rewritting of a python version into a more standalone, lightweight and performant nim version. 
+Such database may allow one to develop investment strategies, charts, analysis, ... without relying on external services (ie just from your own and raw data from the cex).  
+This is a rewritting of a python version into a more standalone, lightweight and somewhat performant nim version. 
 
 ## Requirement
-A working nim environment with
+A standard working nim environment with
 - recent nim version (tested with nim 1.6)
 - C compiler
 - nimble
