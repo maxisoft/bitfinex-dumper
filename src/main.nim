@@ -23,11 +23,18 @@ var logger = newConsoleLogger(logLevel, useStderr=true)
 var saveStdErrPos {.threadvar.}: int64
 
 proc flushStderr(f: File = stderr): bool {.discardable.} =
-    let p = getFilePos(f)
-    if p != saveStdErrPos:
+    if saveStdErrPos == -1:
         flushFile(stderr)
-        saveStdErrPos = getFilePos(f)
-        result = true
+        return true
+    try:
+        let p = getFilePos(f)
+        if p != saveStdErrPos:
+            flushFile(stderr)
+            saveStdErrPos = getFilePos(f)
+            result = true
+    except IOError:
+        # getFilePos(stderr) throws on linux
+        saveStdErrPos = -1
 
 proc listPairs(): seq[string] =
     var client = newHttpClient(timeout = 30_000)
