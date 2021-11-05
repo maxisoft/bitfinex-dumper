@@ -76,8 +76,9 @@ proc main() =
         waitFor ws.waitConnected()
         if dbW.hasWork:
             dbW.step(150)
-        if getMonoTime() - iterTime < initDuration(milliseconds = 100):
-            waitFor sleepAsync(100)
+        waitFor sleepAsync(100)
+        if getMonoTime() - iterTime < initDuration(milliseconds = 300):
+            waitFor sleepAsync(250)
 
 when isMainModule:
     main()
