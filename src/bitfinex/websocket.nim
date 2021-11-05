@@ -151,16 +151,6 @@ proc connect(self: BitFinexWebSocket) {.async.} =
         self.connectCounter += 1
         logger.log(lvlDebug, "ws connect to ", self.url)
 
-proc unhandledMessage(self: BitFinexWebSocket, node: JsonNode): bool {.inline.} =
-    logger.log(lvlWarn, "unhandled msg: ", node)
-    result = false
-
-func isHeartBeatMessage(node: JsonNode): bool = 
-    result = len(node) == 2 and node{1}.kind == JString and node{1}.getStr() == "hb"
-
-func pendingSubscriptionsCounter*(self: BitFinexWebSocket): int {.inline.} =
-    result = len(self.pendingSubscriptionCallbacks)
-
 const channelWithSymbol = ["book", "ticker"]
 const channelWithKey = ["candles", "status"]
 
@@ -178,6 +168,29 @@ func pendingSubscribtionIdentifier(payload: JsonNode): string =
     
     while len(result) > 0 and result[^1] == '_':
         result.setLen(len(result) - 1)
+
+proc unsubscribeSync*(self: BitFinexWebSocket, chanId: int64, subscription: JsonNode = nil) =
+    if chanId != -1 and (len(self.unsubscribeQueue) == 0 or (self.unsubscribeQueue[0] != chanId and self.unsubscribeQueue[^1] != chanId)):
+        self.unsubscribeQueue.addLast(chanId)
+    if subscription != nil:
+        let identifier = pendingSubscribtionIdentifier(subscription)
+        self.pendingSubscriptionCallbacks.del(identifier)
+
+proc unhandledMessage(self: BitFinexWebSocket, node: JsonNode): bool {.inline.} =
+    when not defined(release):
+        logger.log(lvlWarn, "unhandled msg: ", node)
+    if node.kind == JArray and len(node) > 0 and node{0}.kind == JInt:
+        let chanId = node{0}.getBiggestInt()
+        if chanId notin self.subscriptions:
+            logger.log(lvlDebug, "unsubscribing to unknown channel ", chanId)
+            self.unsubscribeSync(chanId)
+    result = false
+
+func isHeartBeatMessage(node: JsonNode): bool = 
+    result = len(node) == 2 and node{1}.kind == JString and node{1}.getStr() == "hb"
+
+func pendingSubscriptionsCounter*(self: BitFinexWebSocket): int {.inline.} =
+    result = len(self.pendingSubscriptionCallbacks)
 
 proc dispatch(self: BitFinexWebSocket, node: JsonNode): Future[bool] {.async.} =
     if node.kind == JObject:
@@ -294,13 +307,6 @@ proc subscribe*(self: BitFinexWebSocket, channel: string, event = "subscribe", s
         for k, v in pairs(subscriptionData):
             payload{k} = v
     await subscribe(self, payload)
-
-proc unsubscribeSync*(self: BitFinexWebSocket, chanId: int64, subscription: JsonNode = nil) =
-    if chanId != -1:
-        self.unsubscribeQueue.addLast(chanId)
-    if subscription != nil:
-        let identifier = pendingSubscribtionIdentifier(subscription)
-        self.pendingSubscriptionCallbacks.del(identifier)
 
 proc unsubscribe*(self: BitFinexWebSocket, chanId: int64, event = "unsubscribe", subscriptionData: JsonNode = nil) {.async.} =
     var payload: JsonNode = %* {"event": event, "chanId": chanId}
