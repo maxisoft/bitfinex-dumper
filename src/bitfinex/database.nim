@@ -1,3 +1,5 @@
+## Contains proc to help with sqlite queries creation.
+## Mainly based on string concatenation/formating.
 import std/json
 import std/strformat
 import std/tables
@@ -5,15 +7,16 @@ import std/strbasics
 import std/re
 import std/macros
 
-const TIME_COLUMN_NAME = "time"
-const ASK_PRICE_COLUMN_NAME = "ask_price"
-const ASK_COUNT_COLUMN_NAME = "ask_count"
-const ASK_AMOUNT_COLUMN_NAME = "ask_amount"
-const BID_PRICE_COLUMN_NAME = "bid_price"
-const BID_COUNT_COLUMN_NAME = "bid_count"
-const BID_AMOUNT_COLUMN_NAME = "bid_amount"
-const ORDERBOOK_NUMBER_OF_ENTRY_FIELDS = ["PRICE", "COUNT", "AMOUNT"]
-const ORDERBOOK_NUMBER_OF_FIELDS_PER_ENTRY = len(ORDERBOOK_NUMBER_OF_ENTRY_FIELDS)
+const 
+    TIME_COLUMN_NAME = "time"
+    ASK_PRICE_COLUMN_NAME = "ask_price"
+    ASK_COUNT_COLUMN_NAME = "ask_count"
+    ASK_AMOUNT_COLUMN_NAME = "ask_amount"
+    BID_PRICE_COLUMN_NAME = "bid_price"
+    BID_COUNT_COLUMN_NAME = "bid_count"
+    BID_AMOUNT_COLUMN_NAME = "bid_amount"
+    ORDERBOOK_NUMBER_OF_ENTRY_FIELDS = ["PRICE", "COUNT", "AMOUNT"]
+    ORDERBOOK_NUMBER_OF_FIELDS_PER_ENTRY = len(ORDERBOOK_NUMBER_OF_ENTRY_FIELDS)
 
 func rstrip(s: var string, c: char=' ') {.inline.} =
     while len(s) > 0 and s[^1] == c:
