@@ -43,21 +43,22 @@ jobs:
       timeout-minutes: 360
       run: |
             set -x
-            echo "${{ github.token }}" | docker login https://docker.pkg.github.com -u ${GITHUB_ACTOR} --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
             docker buildx build \
             --platform=linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64/v8,linux/ppc64le,linux/s390x \
             --output "type=image,push=true" \
             --file ./docker/Dockerfile . \
-            --tag docker.pkg.github.com/maxisoft/bitfinex_dumper/bitfinex_dumper_testing:latest
+            --tag ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper_testing:latest
 
     - name: Build dockerfile
       if: success() && github.ref == 'refs/heads/main'
       timeout-minutes: 360
       run: |
             set -x
-            echo "${{ github.token }}" | docker login https://docker.pkg.github.com -u ${GITHUB_ACTOR} --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker buildx build \
             --platform=linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64/v8,linux/ppc64le,linux/s390x \
             --output "type=image,push=true" \
             --file ./docker/Dockerfile . \
-            --tag docker.pkg.github.com/maxisoft/bitfinex_dumper/bitfinex_dumper:latest
+            --tag ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest

@@ -5,8 +5,8 @@ COPY ./src/ /usr/src/bitfinexdumper
 WORKDIR /usr/src/bitfinexdumper
 # install nim
 RUN mkdir -p /nim
-RUN wget -q --show-progress -O "/tmp/nim-1.6.0.tar.xz" "https://nim-lang.org/download/nim-1.6.0.tar.xz" 
-RUN tar -xJf "/tmp/nim-1.6.0.tar.xz" -C /nim --strip-components=1
+RUN wget -q --show-progress -O "/tmp/nim.tar.xz" "https://nim-lang.org/download/nim-1.6.0.tar.xz" 
+RUN tar -xJf "/tmp/nim.tar.xz" -C /nim --strip-components=1
 WORKDIR /nim
 RUN sh build.sh && ln -s `pwd`/bin/nim /bin/nim
 RUN nim c koch && ./koch boot -d:release && ./koch tools && ln -s `pwd`/bin/nimble /bin/nimble && ln -s `pwd`/bin/nimsuggest /bin/nimsuggest && ln -s `pwd`/bin/testament /bin/testament
