@@ -23,6 +23,7 @@ var logger = newConsoleLogger(logLevel, useStderr=true)
 type 
     BaseJob {.inheritable.} = ref object of RootObj
         dueTime: MonoTime
+        errorCounter: int64
 
     OrderBookCollectorJobArgument* = object
         symbol*: string
@@ -148,15 +149,19 @@ const
     SCHEDULER_MIN_SLEEP_TICK = 250
     SCHEDULER_JOB_ACTIVE_SLOT = 8
     SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 16
+    JOB_MAX_ERROR_COUNTER = 1024
 
 
 method perform(this: OrderBookCollectorJob) {.async.} =
     let identifier = this.args.identifer()
     
-    if unlikely(not this.ws.connected or this.ws.subscriptionCount() > 20):
+    if unlikely(not this.ws.connected or this.ws.isSubscriptionFull()):
         # reschedule the task asap
-        this.dueTime = max(this.dueTime, getMonoTime()) + initDuration(milliseconds = SCHEDULER_MIN_SLEEP_TICK)
-        # TODO error counter and throw
+        this.dueTime = max(getMonoTime(), this.dueTime) + initDuration(milliseconds = SCHEDULER_MIN_SLEEP_TICK)
+        if not this.ws.connected:
+            inc this.errorCounter
+            if this.errorCounter >= JOB_MAX_ERROR_COUNTER:
+                raise Exception.newException("Job max error counter reached")
         return
 
     if unlikely(this.subscriptionPayload.isNil):
@@ -179,8 +184,10 @@ method perform(this: OrderBookCollectorJob) {.async.} =
 
     proc finalizer(success: bool) =
         if unlikely(not success):
+            inc this.errorCounter
             this.ws.unsubscribeSync(-1, this.subscriptionPayload)
         else:
+            this.errorCounter = 0
             inc this.callBackVersion # we are done with this callback
 
     block:
