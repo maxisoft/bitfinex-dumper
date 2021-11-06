@@ -119,7 +119,7 @@ proc connectRateLimiter(self: BitFinexWebSocket): var RateLimiter {.inline.} =
 const 
     RATE_LIMITER_SLEEP_TICK_MS = 50
     RATE_LIMITER_LIMIT_CONNECTION_PER_MINUTE = 20 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
-    MAX_NUMBER_OF_CHANNEL = 25 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
+    BITFINEX_MAX_NUMBER_OF_CHANNEL* = 25 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
 
     oneMinute = initDuration(minutes = 1)
 
@@ -262,11 +262,14 @@ proc notifyConnectAwaiters(self: BitFinexWebSocket) =
 proc emptyCallback(data: JsonNode) =
     logger.log(lvlWarn, "emptyCallback called with ", $data)
 
-func subscriptionCount*(self: BitFinexWebSocket): int =
-    return len(self.subscriptions) + self.pendingSubscriptionsCounter
+func subscriptionCount*(self: BitFinexWebSocket): int {.inline.} =
+    result = len(self.subscriptions) + self.pendingSubscriptionsCounter
+
+func isSubscriptionFull*(self: BitFinexWebSocket) : bool {.inline.} =
+    result = self.subscriptionCount() >= BITFINEX_MAX_NUMBER_OF_CHANNEL
 
 proc subscribe*(self: BitFinexWebSocket, subscription: JsonNode, callback: proc (data: JsonNode) = emptyCallback) {.async.} =
-    if subscriptionCount(self) >= MAX_NUMBER_OF_CHANNEL:
+    if isSubscriptionFull(self):
         raise Exception.newException("too many subscription")
     var buff: string
     toUgly(buff, subscription)
@@ -328,6 +331,7 @@ const
     WS_LOOP_SLEEP_MS = 50
     WS_PING_EVERY_MS = 30 * 1000
     WS_CONNECT_WAIT_TIME_MS = 150
+    WS_MAX_ERROR_COUNTER = 32
 
 proc restart(self: BitFinexWebSocket, keepRunning: bool = false) =
     assert self.ws.isNil or self.ws.readyState != ReadyState.Open
@@ -352,12 +356,12 @@ proc connectSafe(self: BitFinexWebSocket) {.async.} =
             await connect(self)
         finally:
             try:
-                self.connectRateLimiter.counter += 1
+                inc self.connectRateLimiter.counter
             finally:
                 self.connectLock.release()
     else:
         if not connected(self):
-            self.errorCounter += 1
+            inc self.errorCounter
 
 proc processUnsubscribeQueue(self: BitFinexWebSocket, limit = 32) {.async.} =
     var c = 0
@@ -386,6 +390,8 @@ proc processUnsubscribeQueue(self: BitFinexWebSocket, limit = 32) {.async.} =
 proc loop*(self: BitFinexWebSocket) {.async.} =
     while not self.requestStop:
         self.running = true
+        if self.errorCounter >= WS_MAX_ERROR_COUNTER:
+            raise Exception.newException("ws max error counter reached")
         let t = getMonoTime()
         if not connected(self):
             await connectSafe(self)
@@ -407,7 +413,7 @@ proc loop*(self: BitFinexWebSocket) {.async.} =
                     discard await dispatch(self, node)
                 except JsonParsingError:
                     logger.log(lvlWarn, "invalid json recv ", data)
-                    self.errorCounter += 1
+                    inc self.errorCounter
                     raise
         except WebSocketClosedError:
             logger.log(lvlWarn, "websocket closed")
@@ -416,9 +422,11 @@ proc loop*(self: BitFinexWebSocket) {.async.} =
                     self.ws.close()
             except:
                 logger.log(lvlDebug, "unable to close websocket on our end")
+                inc self.errorCounter
             restart(self, true)
             continue
-        self.messageCounter += 1
+        inc self.messageCounter
+        self.errorCounter = max(self.errorCounter - 1, 0)
         if getMonoTime() - t < initDuration(milliseconds = WS_LOOP_SLEEP_MS) and not self.requestStop:
             await sleepAsync(WS_LOOP_SLEEP_MS)
 
