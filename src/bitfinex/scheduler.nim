@@ -8,7 +8,6 @@ import std/parseutils
 import std/heapqueue
 import std/options
 import std/logging
-import std/locks
 import std/hashes
 import ./databasewriter
 import ./websocket
@@ -49,7 +48,6 @@ type
         args: OrderBookCollectorJobArgument
         wsPool: BitFinexWebSocketPool
         dbWritter: DatabaseWriter
-        lock: Lock
         
         resamplePeriod: Duration
         subscriptionPayload: JsonNode
@@ -129,7 +127,6 @@ proc newOrderBookCollectorJob*(arguments: OrderBookCollectorJobArgument, wsPool:
     result.args = arguments
     result.wsPool = wsPool
     result.dbWritter = dbWritter
-    initLock(result.lock)
 
     result.resamplePeriod = parsePeriod(arguments.resamplePeriod)
     assert arguments.debounceTimeMs <= result.resamplePeriod.inMilliseconds
@@ -185,9 +182,7 @@ method perform(this: OrderBookCollectorJob) {.async.} =
 
     template withMatchingVersion(body: untyped) =
         if versionMatch():
-            withLock(this.lock):
-                if versionMatch():
-                    body
+            body
 
     proc finalizer(success: bool) =
         if unlikely(not success):
@@ -213,10 +208,9 @@ method perform(this: OrderBookCollectorJob) {.async.} =
             finalizer: finalizer
         )
 
-        withLock(this.lock):
-            inc this.callBackVersion
-            callBackVersion = this.callBackVersion
-            shallowCopy(this.callback, callback.some())
+        inc this.callBackVersion
+        callBackVersion = this.callBackVersion
+        shallowCopy(this.callback, callback.some())
 
     proc cb(node: JsonNode) =
         var invoked = false
