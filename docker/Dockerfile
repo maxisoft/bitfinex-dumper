@@ -9,7 +9,7 @@ RUN nim c -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filename
 
 FROM alpine
 LABEL maintainer="github.com/maxisoft" name="bitfinex dumper" description="Track and save bitfinex's order books of all available crypto pairs." url="https://github.com/maxisoft/bitfinex_dumper" vcs-url="https://github.com/maxisoft/bitfinex_dumper" org.opencontainers.image.source="https://github.com/maxisoft/bitfinex_dumper"
-RUN apk add --no-cache openssl binutils sqlite-dev ca-certificates
+RUN apk add --no-cache openssl binutils sqlite-dev ca-certificates pcre2 pcre
 COPY --from=builder /bin/bitfinex_dumper /bin/bitfinex_dumper
 ENTRYPOINT [ "/bin/bitfinex_dumper" ]
 #CMD [ ]
