@@ -13,6 +13,7 @@ import std/hashes
 import ./databasewriter
 import ./websocket
 import ./orderbook
+import ./websocketpool
 
 let logLevel = when defined(release):
     lvlInfo
@@ -46,7 +47,7 @@ type
 
     OrderBookCollectorJob* = ref object of BaseJob
         args: OrderBookCollectorJobArgument
-        ws: BitFinexWebSocket
+        wsPool: BitFinexWebSocketPool
         dbWritter: DatabaseWriter
         lock: Lock
         
@@ -54,6 +55,7 @@ type
         subscriptionPayload: JsonNode
         callback: Option[OrderBookCollectorWebSocketCallback]
         callBackVersion: int64
+        
 
 func hash*(x: OrderBookCollectorJobArgument): Hash =
     ## Compute the hash of an OrderBookCollectorJobArgument.
@@ -121,12 +123,11 @@ func parsePeriod*(period: string): Duration =
         else: raise Exception.newException("not a valid period")
     )
         
-proc newOrderBookCollectorJob*(arguments: OrderBookCollectorJobArgument, ws: BitFinexWebSocket, dbWritter: DatabaseWriter): OrderBookCollectorJob =
-    assert arguments.debounceTimeMs >= 0
-    
+proc newOrderBookCollectorJob*(arguments: OrderBookCollectorJobArgument, wsPool: BitFinexWebSocketPool, dbWritter: DatabaseWriter): OrderBookCollectorJob =
     result.new()
+    assert arguments.debounceTimeMs >= 0
     result.args = arguments
-    result.ws = ws
+    result.wsPool = wsPool
     result.dbWritter = dbWritter
     initLock(result.lock)
 
@@ -154,11 +155,17 @@ const
 
 method perform(this: OrderBookCollectorJob) {.async.} =
     let identifier = this.args.identifer()
+    var ws = this.wsPool.rent()
+    var returnWs = true
+    defer:
+        if returnWs and ws != nil:
+            this.wsPool.`return`(ws)
+            ws = nil
     
-    if unlikely(not this.ws.connected or this.ws.isSubscriptionFull()):
+    if unlikely(not ws.connected or ws.isSubscriptionFull()):
         # reschedule the task asap
         this.dueTime = max(getMonoTime(), this.dueTime) + initDuration(milliseconds = SCHEDULER_MIN_SLEEP_TICK)
-        if not this.ws.connected:
+        if not ws.connected:
             inc this.errorCounter
             if this.errorCounter >= JOB_MAX_ERROR_COUNTER:
                 raise Exception.newException("Job max error counter reached")
@@ -185,16 +192,21 @@ method perform(this: OrderBookCollectorJob) {.async.} =
     proc finalizer(success: bool) =
         if unlikely(not success):
             inc this.errorCounter
-            this.ws.unsubscribeSync(-1, this.subscriptionPayload)
+            if ws != nil:
+                ws.unsubscribeSync(-1, this.subscriptionPayload)
         else:
             this.errorCounter = 0
             inc this.callBackVersion # we are done with this callback
+
+        if ws != nil:
+            this.wsPool.`return`(ws)
+            ws = nil
 
     block:
         let callback = OrderBookCollectorWebSocketCallback(
             identifier: identifier,
             dbWritter: this.dbWritter,
-            ws: this.ws,
+            ws: ws,
             orderbook: newOrderBook(),
             debounceTimeLimit: initDuration(milliseconds = this.args.debounceTimeMs),
             expectedOrderBookLength: this.args.length,
@@ -217,10 +229,12 @@ method perform(this: OrderBookCollectorJob) {.async.} =
             var chanId: int64 = -1
             if node.kind == JArray and len(node) > 0 and node{0}.kind == JInt:
                 chanId = parseInt(node{0})
-            this.ws.unsubscribeSync(chanId, this.subscriptionPayload)
+            if ws != nil:
+                ws.unsubscribeSync(chanId, this.subscriptionPayload)
 
-    this.ws.unsubscribeSync(-1, this.subscriptionPayload)
-    await this.ws.subscribe(this.subscriptionPayload, cb)
+    ws.unsubscribeSync(-1, this.subscriptionPayload)
+    await ws.subscribe(this.subscriptionPayload, cb)
+    returnWs = false
 
 method incrementDueTime(this: OrderBookCollectorJob) =
     this.dueTime = max(this.dueTime, getMonoTime()) + this.resamplePeriod
