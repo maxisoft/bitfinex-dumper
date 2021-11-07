@@ -46,7 +46,7 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker buildx build \
-            --platform=linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64/v8,linux/ppc64le \
+            --platform=linux/amd64,linux/arm/v7,linux/arm64/v8 \
             --output "type=image,push=true" \
             --file ./docker/Dockerfile . \
             --tag ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper_testing:latest
@@ -58,7 +58,7 @@ jobs:
             set -x
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker buildx build \
-            --platform=linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64/v8,linux/ppc64le \
+            --platform=linux/amd64,linux/arm/v7,linux/arm64/v8 \
             --output "type=image,push=true" \
             --file ./docker/Dockerfile . \
             --tag ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest
