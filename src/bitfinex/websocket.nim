@@ -8,7 +8,6 @@ import std/tables
 import std/options
 import std/logging
 import std/deques
-import std/locks
 import std/strutils
 import asynctools/asyncsync
 
@@ -33,7 +32,6 @@ type
 
     RateLimiterFactory[T] = ref object
         limiters: OrderedTable[T, RateLimiter]
-        lock: Lock
 
     ConnectionRateLimiterFactory* = RateLimiterFactory[string]
 
@@ -49,21 +47,33 @@ type
         subscriptions: OrderedTable[int64, Subscription]
         pendingSubscriptionCallbacks: OrderedTable[string, SubscriptionCallback]
         infoPayload: JsonNode
-        unsubscribeQueue: Deque[int64]
+        unsubscribeQueue: OrderedSet[int64]
         connectLock: AsyncLock
         pendingSubscriptionLock: AsyncLock
         connectAwaiters: Deque[Future[void]]
+        recvFuture: Future[string]
         rateLimiterFactory: ConnectionRateLimiterFactory
 
+func popFirst[T](self: var OrderedSet[T]): T =
+    for v in self:
+        self.excl(v)
+        return v
+    raise Exception.newException("empty queue")
+
+func addLast[T](self: var OrderedSet[T], val: T) {.inline.} =
+    incl(self, val)
+
 proc close*(self: BitFinexWebSocket) =
-    if self.ws != nil:
-        self.ws.close()
+    let ws = self.ws
+    self.ws = nil
+    if ws != nil:
+        ws.hangup()
     self.subscriptions.clear()
     self.pendingSubscriptionCallbacks.clear()
     self.unsubscribeQueue.clear()
-
-proc finalizer[T](self: RateLimiterFactory[T]) = 
-    deinitLock(self.lock)
+    if self.recvFuture != nil:
+        self.recvFuture.callback= proc () = discard
+        self.recvFuture = nil
 
 proc finalizer(self: BitFinexWebSocket) = 
     close(self)
@@ -75,12 +85,8 @@ proc newSubscription(id: int64, subscriptionInfo: JsonNode): Subscription =
     result.callback = nil
 
 proc newConnectionRateLimiterFactory*(): ConnectionRateLimiterFactory =
-    when defined(gcDestructors):
-        result.new()
-    else:
-        result.new(proc (x: ConnectionRateLimiterFactory) = finalizer[string](x))
+    result.new()
     result.limiters = initOrderedTable[string, RateLimiter](0)
-    initLock(result.lock)
 
 proc newBitFinexWebSocket*(url: string, rateLimiterFactory: ConnectionRateLimiterFactory): BitFinexWebSocket =
     when defined(gcDestructors):
@@ -94,7 +100,7 @@ proc newBitFinexWebSocket*(url: string, rateLimiterFactory: ConnectionRateLimite
     result.connectLock = newAsyncLock()
     result.pendingSubscriptionLock = newAsyncLock()
     result.rateLimiterFactory = rateLimiterFactory
-    result.unsubscribeQueue = initDeque[int64]()
+    result.unsubscribeQueue = initOrderedSet[int64]()
 
 proc newRateLimiter(): RateLimiter =
     result.new()
@@ -103,22 +109,19 @@ proc newRateLimiter(): RateLimiter =
 
 proc connectRateLimiter[T](self: RateLimiterFactory[T], key: T): var RateLimiter =
     if key notin self.limiters:
-        withLock(self.lock):
-            if key notin self.limiters:
-                # copy on write mechanism
-                var copy = initOrderedTable[string, RateLimiter](len(self.limiters) + 1)
-                for k, v in pairs(self.limiters):
-                    copy[k] = v
-                copy[key] = newRateLimiter()
-                shallowCopy(self.limiters, copy)
+        self.limiters[key] = newRateLimiter()
     result = self.limiters[key]
 
-proc connectRateLimiter(self: BitFinexWebSocket): var RateLimiter {.inline.} =
-    result = connectRateLimiter[string](self.rateLimiterFactory, self.url)
+proc connectRateLimiter*(self: ConnectionRateLimiterFactory, key: string): var RateLimiter {.inline.} =
+    result = connectRateLimiter[string](self, key)
+
+proc connectRateLimiter*(self: BitFinexWebSocket): var RateLimiter {.inline.} =
+    result = connectRateLimiter(self.rateLimiterFactory, self.url)
 
 const 
     RATE_LIMITER_SLEEP_TICK_MS = 50
-    RATE_LIMITER_LIMIT_CONNECTION_PER_MINUTE = 20 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
+    BITFINEX_LIMIT_CONNECTION_PER_MINUTE* = 20 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
+    RATE_LIMITER_LIMIT_CONNECTION_PER_MINUTE = BITFINEX_LIMIT_CONNECTION_PER_MINUTE
     BITFINEX_MAX_NUMBER_OF_CHANNEL* = 25 # https://docs.bitfinex.com/docs/requirements-and-limitations#websocket-rate-limits
 
     oneMinute = initDuration(minutes = 1)
@@ -145,10 +148,22 @@ proc waitForConnectLimit*(self: BitFinexWebSocket, limit = -1, timeout = -1) {.a
 
 proc connect(self: BitFinexWebSocket) {.async.} =
     if self.ws.isNil or self.ws.readyState != ReadyState.Open:
+        let prevWs = self.ws
         close(self)
-        self.ws = await newWebSocket(self.url)
-        self.pingTime = getMonoTime()
+        let ws = await newWebSocket(self.url)
         self.connectCounter += 1
+        if self.ws != nil:
+            if cast[pointer](prevWs) != cast[pointer](self.ws):
+                logger.log(lvlWarn, "a concurrent call to connect() has been made")
+            if self.ws.readyState != ReadyState.Closed:
+                logger.log(lvlDebug, "closing freshly created websocket")
+                try:
+                    ws.hangup()
+                except:
+                    logger.log(lvlWarn, "close ", getCurrentExceptionMsg())
+                return
+        self.ws = ws
+        self.pingTime = getMonoTime()
         logger.log(lvlDebug, "ws connect to ", self.url)
 
 const channelWithSymbol = ["book", "ticker"]
@@ -170,7 +185,7 @@ func pendingSubscribtionIdentifier(payload: JsonNode): string =
         result.setLen(len(result) - 1)
 
 proc unsubscribeSync*(self: BitFinexWebSocket, chanId: int64, subscription: JsonNode = nil) =
-    if chanId != -1 and (len(self.unsubscribeQueue) == 0 or (self.unsubscribeQueue[0] != chanId and self.unsubscribeQueue[^1] != chanId)):
+    if chanId != -1:
         self.unsubscribeQueue.addLast(chanId)
     if subscription != nil:
         let identifier = pendingSubscribtionIdentifier(subscription)
@@ -323,8 +338,9 @@ proc unsubscribe*(self: BitFinexWebSocket, chanId: int64, event = "unsubscribe",
     assert payload.contains("chanId")
     if not connected(self):
         raise Exception.newException("not connected")
-
-    await self.ws.send(buff)
+    let ws = self.ws
+    if ws != nil:
+        await ws.send(buff)
     self.subscriptions.del(chanId)
 
 const 
@@ -354,6 +370,9 @@ proc connectSafe(self: BitFinexWebSocket) {.async.} =
             await waitForConnectLimit(self)
             assert not connected(self)
             await connect(self)
+        except WebSocketFailedUpgradeError:
+            inc self.errorCounter
+            close(self)
         finally:
             try:
                 inc self.connectRateLimiter.counter
@@ -386,8 +405,45 @@ proc processUnsubscribeQueue(self: BitFinexWebSocket, limit = 32) {.async.} =
                 yield fut # discard but the future may complete later
                 self.unsubscribeQueue.addLast(chanIds[i]) # retry later
         raise
+
+proc stop*(self: BitFinexWebSocket) =
+    self.requestStop = true
+
+proc receiveStrPacket(self: BitFinexWebSocket, ws: WebSocket, timeoutMs: int = 100): Future[string] {.async.} =
+    ## Receive a string packet within timeout 
+    ## No strict garanty that the task ends within timeout, just best effort
+    ## Returns empty if no packet has been sent to us (or if the underlaying call returns empty)
+    if self.recvFuture.isNil:
+        self.recvFuture = ws.receiveStrPacket()
+
+    let recv = self.recvFuture
+
+    template readAndCleanup() =
+        try:
+            result = recv.read()
+        finally:
+            # check that recvFuture hasn't changed
+            if cast[pointer](recv) == cast[pointer](self.recvFuture):
+                self.recvFuture = nil
+
+    if recv.finished():
+        readAndCleanup()
+    elif await withTimeout(recv, timeoutMs):
+        if cast[pointer](recv) == cast[pointer](self.recvFuture):
+            readAndCleanup()
+        else:
+            result = recv.read()
+    elif self.recvFuture.isNil:
+        self.recvFuture = recv
+    elif cast[pointer](recv) != cast[pointer](self.recvFuture):
+        # have to wait as another task replaced recvFuture
+        # before this current task
+        result = await recv
+        # TODO use a queue to avoid awaiting ?
                 
 proc loop*(self: BitFinexWebSocket) {.async.} =
+    if self.running:
+        return
     while not self.requestStop:
         self.running = true
         if self.errorCounter >= WS_MAX_ERROR_COUNTER:
@@ -401,25 +457,30 @@ proc loop*(self: BitFinexWebSocket) {.async.} =
         notifyConnectAwaiters(self)
         await processUnsubscribeQueue(self)
 
-        assert self.ws != nil
+        let ws = self.ws
+        if ws.isNil:
+            continue
         try:
             if t - self.pingTime > pingDuration:
-                await self.ws.ping()
+                await ws.ping()
                 self.pingTime = getMonoTime()
-            let data = await self.ws.receiveStrPacket()
+            let data = await self.receiveStrPacket(ws)
             if len(data) > 0:
                 try:
                     let node: JsonNode = parseJson(data)
                     discard await dispatch(self, node)
                 except JsonParsingError:
-                    logger.log(lvlWarn, "invalid json recv ", data)
+                    logger.log(lvlWarn, "invalid json recv ", data, " ", getCurrentExceptionMsg())
                     inc self.errorCounter
                     raise
         except WebSocketClosedError:
-            logger.log(lvlWarn, "websocket closed")
+            logger.log(lvlDebug, "websocket closed")
             try:
-                if self.ws != nil:
-                    self.ws.close()
+                if ws != nil and cast[pointer](self.ws) == cast[pointer](ws):
+                    close(self)
+                elif ws != nil and ws.readyState != ReadyState.Closed:
+                    logger.log(lvlWarn, "closing dangling websocket")
+                    ws.hangup()
             except:
                 logger.log(lvlDebug, "unable to close websocket on our end")
                 inc self.errorCounter
