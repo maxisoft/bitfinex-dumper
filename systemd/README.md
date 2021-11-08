@@ -4,7 +4,7 @@
 ```bash
 bash
 set -euo pipefail
-wget "https://github.com/maxisoft/bitfinex_dumper/releases/download/v1.0.0-alpha/bitfinex_dumper" -O "/tmp/bitfinex_dumper"
+wget "https://github.com/maxisoft/bitfinex_dumper/releases/download/v1.0.0/bitfinex_dumper" -O "/tmp/bitfinex_dumper"
 useradd -r -s /bin/false bitfinexdumper
 install -d -m 0755 -o bitfinexdumper -g bitfinexdumper /opt/bitfinexdumper
 install -d -m 0755 -o bitfinexdumper -g bitfinexdumper /var/bitfinexdumper
