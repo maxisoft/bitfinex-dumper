@@ -33,13 +33,13 @@ iterator entries*(self: BitFinexWebSocketPool): var PoolEntry =
 const 
     oneMinute = initDuration(minutes = 1)
     oneHour = initDuration(hours = 1)
-    FRESHLY_CREATED_WEBSOCKET_LIMIT_PER_MINUTE = BITFINEX_LIMIT_CONNECTION_PER_MINUTE div 2
+    FRESHLY_CREATED_WEBSOCKET_LIMIT_PER_MINUTE* = BITFINEX_LIMIT_CONNECTION_PER_MINUTE div 2
 
 proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false): BitFinexWebSocket =
     var freshlyCreatedCounter = 0
     let now = getMonoTime()
     for e in entries(self):
-        if abs(now - e.creationDate) < oneHour and not e.ws.isSubscriptionFull and e.useCounter + useCount <= BITFINEX_MAX_NUMBER_OF_CHANNEL:
+        if abs(now - e.creationDate) < oneHour and not e.ws.isSubscriptionFull and e.useCounter + useCount < BITFINEX_MAX_NUMBER_OF_CHANNEL:
             inc e.useCounter, useCount
             e.lastUseDate = getMonoTime()
             return e.ws

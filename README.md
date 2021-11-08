@@ -21,7 +21,7 @@ nimble install ws asynctools sorta
 
 ## Compilation
 ```sh
-nim c -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical -o:bitfinex_dumper ./src/main.nim
+nim c -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --define:useRealtimeGC -o:bitfinex_dumper ./src/main.nim
 ```
 
 ## Usage
