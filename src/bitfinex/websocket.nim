@@ -48,6 +48,8 @@ type
         pendingSubscriptionCallbacks: OrderedTable[string, SubscriptionCallback]
         infoPayload: JsonNode
         unsubscribeQueue: OrderedSet[int64]
+        buggySubscriptions: OrderedSet[int64] # sometimes the remote server won't let us unsubscribe to some open channel
+        activeBuggySubscriptions: OrderedSet[int64]
         connectLock: AsyncLock
         pendingSubscriptionLock: AsyncLock
         connectAwaiters: Deque[Future[void]]
@@ -71,6 +73,8 @@ proc close*(self: BitFinexWebSocket) =
     self.subscriptions.clear()
     self.pendingSubscriptionCallbacks.clear()
     self.unsubscribeQueue.clear()
+    self.buggySubscriptions.clear()
+    self.activeBuggySubscriptions.clear()
     if self.recvFuture != nil:
         self.recvFuture.callback= proc () = discard
         self.recvFuture = nil
@@ -184,8 +188,8 @@ func pendingSubscribtionIdentifier(payload: JsonNode): string =
     while len(result) > 0 and result[^1] == '_':
         result.setLen(len(result) - 1)
 
-proc unsubscribeSync*(self: BitFinexWebSocket, chanId: int64, subscription: JsonNode = nil) =
-    if chanId != -1:
+proc unsubscribeSync*(self: BitFinexWebSocket, chanId: int64 = -1, subscription: JsonNode = nil) =
+    if chanId != -1 and chanId notin self.buggySubscriptions:
         self.unsubscribeQueue.addLast(chanId)
     if subscription != nil:
         let identifier = pendingSubscribtionIdentifier(subscription)
@@ -228,6 +232,20 @@ proc dispatch(self: BitFinexWebSocket, node: JsonNode): Future[bool] {.async.} =
             result = true
         elif event == "unsubscribed":
             self.subscriptions.del(node{"chanId"}.getBiggestInt())
+        elif event == "error":
+            logger.log(lvlDebug, "got error event ", event)
+            let chanId = node{"chanId"}.getBiggestInt(-1)
+            if node{"msg"}.getStr() == "unsubscribe: invalid":
+                self.buggySubscriptions.incl(chanId)
+            self.unsubscribeSync(chanId)
+            var identifier = ""
+            try:
+                identifier = pendingSubscribtionIdentifier(node)
+            except:
+                discard
+            if len(identifier) > 0:
+                self.unsubscribeSync(subscription=node)
+            
         else:
             return unhandledMessage(self, node)
             
@@ -241,6 +259,9 @@ proc dispatch(self: BitFinexWebSocket, node: JsonNode): Future[bool] {.async.} =
                 subscription.heartBeatTime = getMonoTime()
             return true
         if subscription.isNil:
+            if chanId in self.buggySubscriptions:
+                self.activeBuggySubscriptions.incl(chanId)
+                return false
             return unhandledMessage(self, node)
 
         if subscription.callback != nil:
@@ -277,11 +298,27 @@ proc notifyConnectAwaiters(self: BitFinexWebSocket) =
 proc emptyCallback(data: JsonNode) =
     logger.log(lvlWarn, "emptyCallback called with ", $data)
 
+func buggySubscriptionCount*(self: BitFinexWebSocket): int {.inline.} =
+    result = len(self.activeBuggySubscriptions)
+
 func subscriptionCount*(self: BitFinexWebSocket): int {.inline.} =
-    result = len(self.subscriptions) + self.pendingSubscriptionsCounter
+    result = len(self.subscriptions) + self.pendingSubscriptionsCounter + buggySubscriptionCount(self)
+
 
 func isSubscriptionFull*(self: BitFinexWebSocket) : bool {.inline.} =
     result = self.subscriptionCount() >= BITFINEX_MAX_NUMBER_OF_CHANNEL
+
+proc send*(self: BitFinexWebSocket, text: string, opcode = Opcode.Text, timeoutMs = 10_000, throws=false, close=true): Future[void] {.async.} =
+    var sendTask = self.ws.send(text, opcode)
+    if not await withTimeout(sendTask, timeoutMs):
+        logger.log(lvlWarn, "ws.send() timeout")
+        if close:
+            # remove any callback as we are going to throw by closing the socket
+            sendTask.callback=proc() = discard
+            close(self)
+        if throws:
+            raise Exception.newException("Websocket send timeout")
+
 
 proc subscribe*(self: BitFinexWebSocket, subscription: JsonNode, callback: proc (data: JsonNode) = emptyCallback) {.async.} =
     if isSubscriptionFull(self):
@@ -307,15 +344,14 @@ proc subscribe*(self: BitFinexWebSocket, subscription: JsonNode, callback: proc 
         await waitForpendingSubscriptionCallbacks()
         assert identifier notin self.pendingSubscriptionCallbacks
         self.pendingSubscriptionCallbacks[identifier] = callback
+        try:
+            logger.log(lvlDebug, "subscribing with: ", buff)
+            await send(self, buff, throws=true)
+        except:
+            self.pendingSubscriptionCallbacks.del(identifier)
+            raise
     finally:
         self.pendingSubscriptionLock.release()
-        
-    try:
-        logger.log(lvlDebug, "subscribing with: ", buff)
-        await self.ws.send(buff)
-    except:
-        self.pendingSubscriptionCallbacks.del(identifier)
-        raise
     
 
 proc subscribe*(self: BitFinexWebSocket, channel: string, event = "subscribe", subscriptionData: JsonNode = nil) {.async.} =
@@ -340,7 +376,12 @@ proc unsubscribe*(self: BitFinexWebSocket, chanId: int64, event = "unsubscribe",
         raise Exception.newException("not connected")
     let ws = self.ws
     if ws != nil:
-        await ws.send(buff)
+        await self.pendingSubscriptionLock.acquire()
+        try:
+            await send(self, buff)
+        finally:
+            self.pendingSubscriptionLock.release()
+        
     self.subscriptions.del(chanId)
 
 const 
