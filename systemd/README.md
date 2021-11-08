@@ -11,7 +11,7 @@ install -d -m 0755 -o bitfinexdumper -g bitfinexdumper /var/bitfinexdumper
 install -m 0554 -o bitfinexdumper -g bitfinexdumper /tmp/bitfinex_dumper /opt/bitfinexdumper/bitfinex_dumper
 touch /tmp/bitfinex.db
 install -m 0644 -o bitfinexdumper -g bitfinexdumper /tmp/bitfinex.db /var/bitfinexdumper/bitfinex.db
-# Disable cow for btrfs user: (it yield better performance but it's less safty)
+# Disable cow for btrfs user: (it yield better performance but it's less safer for your data)
 # chattr +C /var/bitfinexdumper/bitfinex.db
 
 # optionally edit the bitfinexdumper.service file

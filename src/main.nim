@@ -1,4 +1,5 @@
 import asyncdispatch
+import os
 import std/json
 import std/monotimes
 import std/db_sqlite
@@ -76,6 +77,14 @@ proc maintainWS(wsPool: BitFinexWebSocketPool, i: int64) {.async.} =
             tasks.add cpy.loop()
     await all tasks
 
+when defined(useRealtimeGC):
+    const GC_MAX_PAUSE = initDuration(milliseconds=100).inMicroseconds.int
+    proc GC_realtime(strongAdvice = false) {.inline.} =
+        GC_step(GC_MAX_PAUSE div 3, strongAdvice)
+else:
+    proc GC_realtime(strongAdvice = false) {.inline.} =
+        discard
+
 proc main() =
     let db = open("bitfinex.db", "", "", "")
     defer:
@@ -88,16 +97,31 @@ proc main() =
     initScheduler(scheduler, wsPool, dbW)
     asyncCheck scheduler.loop()
     var i: int64 = 0
+    when defined(useRealtimeGC):
+        GC_setMaxPause(GC_MAX_PAUSE)
+        GC_step(GC_MAX_PAUSE, true)
+        if not existsEnv("BD_GC_ENABLE"):
+            GC_disable()
+            logger.log(lvlInfo, "Automatic garbage collector disabled.")
+        else:
+            GC_enable()
+            logger.log(lvlInfo, "Automatic garbage collector enabled.")
     while true:
+        GC_realtime()
         let iterTime = getMonoTime()
         if i mod 5 == 0:
             flushStderr()
         asyncCheck maintainWS(wsPool, i)
         if dbW.hasWork:
             dbW.step(150)
+        GC_realtime()
         waitFor sleepAsync(100)
         if getMonoTime() - iterTime < initDuration(milliseconds = 300):
-            waitFor sleepAsync(250)
+            when defined(useRealtimeGC):
+                GC_realtime(true)
+                waitFor sleepAsync(150)
+            else:
+                waitFor sleepAsync(250)
         inc i
 
 when isMainModule:
