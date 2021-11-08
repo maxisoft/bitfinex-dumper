@@ -145,8 +145,8 @@ func identifer(self: OrderBookCollectorJobArgument): string =
 
 const 
     SCHEDULER_MIN_SLEEP_TICK = 250
-    SCHEDULER_JOB_ACTIVE_SLOT = 8
-    SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 16
+    SCHEDULER_JOB_ACTIVE_SLOT = 16
+    SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 32
     JOB_MAX_ERROR_COUNTER = 1024
 
 
@@ -154,6 +154,7 @@ method perform(this: OrderBookCollectorJob) {.async.} =
     let identifier = this.args.identifer()
     var ws = this.wsPool.rent()
     var returnWs = true
+    var cbCalled = newFuture[bool]("OrderBookCollectorJob.perform.cbCalled")
     defer:
         if returnWs and ws != nil:
             this.wsPool.`return`(ws)
@@ -176,6 +177,10 @@ method perform(this: OrderBookCollectorJob) {.async.} =
         "freq": this.args.frequency,
         "len": $(this.args.length)}
 
+    proc unsubscribe() =
+        if ws != nil:
+            ws.unsubscribeSync(-1, this.subscriptionPayload)
+
     var callBackVersion: int64
     
     template versionMatch(): bool = this.callBackVersion == callBackVersion
@@ -185,17 +190,19 @@ method perform(this: OrderBookCollectorJob) {.async.} =
             body
 
     proc finalizer(success: bool) =
-        if unlikely(not success):
-            inc this.errorCounter
+        try:
+            if not cbCalled.finished():
+                cbCalled.complete(success)
+            if unlikely(not success):
+                inc this.errorCounter
+                unsubscribe()
+            else:
+                this.errorCounter = 0
+                inc this.callBackVersion # we are done with this callback
+        finally:
             if ws != nil:
-                ws.unsubscribeSync(-1, this.subscriptionPayload)
-        else:
-            this.errorCounter = 0
-            inc this.callBackVersion # we are done with this callback
-
-        if ws != nil:
-            this.wsPool.`return`(ws)
-            ws = nil
+                this.wsPool.`return`(ws)
+                ws = nil
 
     block:
         let callback = OrderBookCollectorWebSocketCallback(
@@ -226,9 +233,18 @@ method perform(this: OrderBookCollectorJob) {.async.} =
             if ws != nil:
                 ws.unsubscribeSync(chanId, this.subscriptionPayload)
 
-    ws.unsubscribeSync(-1, this.subscriptionPayload)
+    unsubscribe()
     await ws.subscribe(this.subscriptionPayload, cb)
-    returnWs = false
+    if await withTimeout(cbCalled, 30_000):
+        returnWs = false
+
+    if cbCalled.finished() and cbCalled.read():
+        logger.log(lvlDebug, "completed subscribtion")
+    else:
+        logger.log(lvlDebug, "unable to complete subscribtion")
+        unsubscribe()
+        this.dueTime = max(getMonoTime(), this.dueTime) + initDuration(milliseconds = SCHEDULER_MIN_SLEEP_TICK)
+       
 
 method incrementDueTime(this: OrderBookCollectorJob) =
     this.dueTime = max(this.dueTime, getMonoTime()) + this.resamplePeriod
