@@ -223,7 +223,9 @@ proc dispatch(self: BitFinexWebSocket, node: JsonNode): Future[bool] {.async.} =
             let identifier = pendingSubscribtionIdentifier(node)
             var cbFunc: SubscriptionCallback
             if not self.pendingSubscriptionCallbacks.pop(identifier, cbFunc):
-                raise Exception.newException("No callback registered for " & identifier)
+                logger.log(lvlWarn, "No callback registered for ", identifier)
+                self.unsubscribeSync(chanId, node)
+                return false
             subscription.callback = cbFunc
             self.subscriptions[chanId] = subscription
             logger.log(lvlDebug, "new channel ", chanId, " ", identifier)
