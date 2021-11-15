@@ -59,9 +59,11 @@ proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false)
         for n in nodes(self.pool):
             if n.value.effectiveUseCounter < best.value.effectiveUseCounter and abs(now - n.value.creationDate) < oneHour:
                 best = n
+        inc best.value.useCounter, useCount
         return best.value.ws
     
     self.pool.add(PoolEntry(ws: self.factory.create(), creationDate: now, lastUseDate: now))
+    inc self.pool.tail.value.useCounter, useCount
     return self.pool.tail.value.ws
 
 proc shouldClose(n: DoublyLinkedNode[PoolEntry]): bool {.inline.} =
