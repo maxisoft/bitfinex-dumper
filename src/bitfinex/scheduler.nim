@@ -147,6 +147,7 @@ const
     SCHEDULER_MIN_SLEEP_TICK = 250
     SCHEDULER_JOB_ACTIVE_SLOT = max(FRESHLY_CREATED_WEBSOCKET_LIMIT_PER_MINUTE * BITFINEX_MAX_NUMBER_OF_CHANNEL * 8 div 10, 16)
     SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 32
+    SCHEDULER_JOB_TIMEOUT_MS = 45 * 1000
     JOB_MAX_ERROR_COUNTER = 1024
 
 
@@ -281,27 +282,40 @@ proc loop*(self: JobScheduler) {.async.} =
             
             if len(jobs) == 0:
                 let first = self.queue[0]
-                let sleepDuration = min(SCHEDULER_MIN_SLEEP_TICK, (first.dueTime - now).inMilliseconds)
+                let sleepDuration = min(SCHEDULER_MIN_SLEEP_TICK, abs(first.dueTime - now).inMilliseconds)
                 await sleepAsync(sleepDuration.float)
                 c = 0
             else:
                 var exceptions = newSeqOfCap[ref Exception](len(jobs))
+                var futures = newSeqOfCap[Future[void]](len(jobs))
+                for (_, _, future) in jobs:
+                    futures.add(future)
+                var inTime: bool
+                try:
+                    inTime = await withTimeout(all futures, SCHEDULER_JOB_TIMEOUT_MS)
+                except:
+                    discard
+                if not inTime:
+                    raise Exception.newException("SCHEDULER_JOB_TIMEOUT")
                 for (job, prevDueTime, future) in jobs:
                     inc c
                     if c >= SCHEDULER_LOOP_YIELD_EVERY_N_TASK:
                         await sleepAsync(0.0) # allow current task to yield
                         c = 0
-                    try:
-                        await future
-                    except:
-                        exceptions.add getCurrentException()
-                    if job.dueTime == prevDueTime:
-                        job.incrementDueTime()
+                    if future.finished():
+                        try:
+                            future.read()
+                        except:
+                            exceptions.add getCurrentException()
+                        if job.dueTime == prevDueTime:
+                            job.incrementDueTime()
                 if len(exceptions) == 1:
                     raise exceptions[0]
                 elif len(exceptions) > 0:
                     # TODO custom aggregate exceptions and better message
-                    raise Exception.newException(fmt"there was {len(exceptions)} errors")
+                    raise Exception.newException(fmt"there was {len(exceptions)} errors", parentException=exceptions[0])
         finally:
             for (job, _, _) in jobs:
                 self.queue.push(job)
+        if (getMonoTime() - now).inMilliseconds < SCHEDULER_MIN_SLEEP_TICK:
+            await sleepAsync(SCHEDULER_MIN_SLEEP_TICK)
