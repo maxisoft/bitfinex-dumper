@@ -391,3 +391,5 @@ $RECYCLE.BIN/
 bitfinex.db
 /*.db-journal
 /release
+*.db-wal
+*.db-shm

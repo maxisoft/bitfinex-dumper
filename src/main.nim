@@ -88,6 +88,8 @@ proc main() =
     let db = open("bitfinex.db", "", "", "")
     defer:
         db.close()
+    if len(getEnv("SQLITE_WAL", "1")) > 0:
+        db.exec(sql"PRAGMA journal_mode=WAL;")
     let connectionRateLimiterFactory = newConnectionRateLimiterFactory()
     let dbW = newDatabaseWriter(db)
     let wsFactory = BitFinexWebSocketFactory(url: BITFINEX_PUBLIC_WS, rateLimiterFactory: connectionRateLimiterFactory)
