@@ -43,7 +43,7 @@ proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false)
     var freshlyCreatedCounter = 0
     let now = getMonoTime()
     for e in entries(self):
-        if abs(now - e.creationDate) < oneHour and not e.ws.isSubscriptionFull and e.effectiveUseCounter + useCount < BITFINEX_MAX_NUMBER_OF_CHANNEL:
+        if abs(now - e.creationDate) < oneHour and e.effectiveUseCounter == e.useCounter and not e.ws.isSubscriptionFull and e.effectiveUseCounter + useCount < BITFINEX_MAX_NUMBER_OF_CHANNEL:
             inc e.useCounter, useCount
             e.lastUseDate = getMonoTime()
             return e.ws
@@ -69,11 +69,9 @@ proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false)
 proc shouldClose(n: DoublyLinkedNode[PoolEntry]): bool {.inline.} =
     result = false
     let now = getMonoTime()
-    if n.value.useCounter <= 0 and abs(now - n.value.creationDate) > 5 * oneMinute:
-        return true
     if n.value.useCounter <= 0 and n.value.effectiveUseCounter != n.value.useCounter and abs(now - n.value.creationDate) > oneMinute:
         return true
-    if not n.value.ws.connected and abs(now - n.value.lastUseDate) > oneMinute:
+    if not n.value.ws.connected and abs(now - n.value.creationDate) > oneMinute:
         return true
     if abs(now - n.value.lastUseDate) > 2 * oneHour: # no connections should last 2hr
         return true

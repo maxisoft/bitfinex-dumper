@@ -73,8 +73,7 @@ proc maintainWS(wsPool: BitFinexWebSocketPool, i: int64) {.async.} =
     var tasks = newSeq[Future[void]]()
     for ws in wsPool.websockets():
         if not ws.isRunning and not ws.requestStop:
-            let cpy = ws
-            tasks.add cpy.loop()
+            tasks.add ws.loop()
     await all tasks
 
 when defined(useRealtimeGC):
