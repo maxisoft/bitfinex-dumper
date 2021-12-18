@@ -93,7 +93,7 @@ proc main() =
     let connectionRateLimiterFactory = newConnectionRateLimiterFactory()
     let dbW = newDatabaseWriter(db)
     let wsFactory = BitFinexWebSocketFactory(url: BITFINEX_PUBLIC_WS, rateLimiterFactory: connectionRateLimiterFactory)
-    var wsPool = BitFinexWebSocketPool(factory: wsFactory)
+    var wsPool = newBitFinexWebSocketPool(wsFactory)
     var scheduler = newJobScheduler()
     initScheduler(scheduler, wsPool, dbW)
     asyncCheck scheduler.loop()

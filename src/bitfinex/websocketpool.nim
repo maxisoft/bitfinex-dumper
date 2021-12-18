@@ -1,7 +1,9 @@
+import asyncdispatch
 import std/times
 import std/monotimes
 import std/options
 import std/lists
+import std/deques
 import ./websocket
 
 type 
@@ -9,15 +11,24 @@ type
         url*: string
         rateLimiterFactory*: ConnectionRateLimiterFactory
 
-    PoolEntry = object
+    PoolEntry = ref object
         ws: BitFinexWebSocket
         useCounter: int64
         creationDate: MonoTime
         lastUseDate: MonoTime
 
     BitFinexWebSocketPool* = ref object
-        factory*: BitFinexWebSocketFactory
+        factory: BitFinexWebSocketFactory
+        awaiters: Deque[Future[void]]
         pool: DoublyLinkedList[PoolEntry]
+    
+    ConnectLimitError* = object of CatchableError
+
+proc newBitFinexWebSocketPool*(factory: BitFinexWebSocketFactory): BitFinexWebSocketPool =
+    result.new()
+    result.factory = factory
+    result.awaiters = initDeque[Future[void]]()
+    result.pool = initDoublyLinkedList[PoolEntry]()
 
 proc create*(self: var BitFinexWebSocketFactory): BitFinexWebSocket =
     newBitFinexWebSocket(self.url, self.rateLimiterFactory)
@@ -42,17 +53,22 @@ proc effectiveUseCounter(e: var PoolEntry): int64 {.inline.} =
 proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false): BitFinexWebSocket =
     var freshlyCreatedCounter = 0
     let now = getMonoTime()
-    for e in entries(self):
-        if abs(now - e.creationDate) < oneHour and e.effectiveUseCounter == e.useCounter and not e.ws.isSubscriptionFull and e.effectiveUseCounter + useCount < BITFINEX_MAX_NUMBER_OF_CHANNEL:
-            inc e.useCounter, useCount
-            e.lastUseDate = getMonoTime()
-            return e.ws
-        if abs(now - e.creationDate) < oneMinute:
+    for n in nodes(self.pool):
+        if abs(now - n.value.creationDate) < oneHour and n.value.effectiveUseCounter() == n.value.useCounter and not n.value.ws.isSubscriptionFull and n.value.effectiveUseCounter() + useCount < BITFINEX_MAX_NUMBER_OF_CHANNEL:
+            inc n.value.useCounter, useCount
+            n.value.lastUseDate = now
+            # move current node to the end of the list
+            # in order to mimic a priority queue
+            let cpy = n.value
+            self.pool.remove(n)
+            self.pool.add(cpy)
+            return self.pool.tail.value.ws
+        if abs(now - n.value.creationDate) < oneMinute:
             inc freshlyCreatedCounter
 
     if freshlyCreatedCounter >= FRESHLY_CREATED_WEBSOCKET_LIMIT_PER_MINUTE:
         if throwOnConnectLimit:
-            raise Exception.newException("throwOnConnectLimit")
+            raise ConnectLimitError.newException("throwOnConnectLimit")
         assert freshlyCreatedCounter > 0
         assert not self.pool.head.isNil
         var best = self.pool.tail
@@ -60,11 +76,23 @@ proc rent*(self: BitFinexWebSocketPool, useCount = 1, throwOnConnectLimit=false)
             if n.value.effectiveUseCounter < best.value.effectiveUseCounter and abs(now - n.value.creationDate) < oneHour:
                 best = n
         inc best.value.useCounter, useCount
-        return best.value.ws
+        let cpy = best.value
+        self.pool.remove(best)
+        self.pool.add(cpy)
+        return self.pool.tail.value.ws
     
     self.pool.add(PoolEntry(ws: self.factory.create(), creationDate: now, lastUseDate: now))
     inc self.pool.tail.value.useCounter, useCount
     return self.pool.tail.value.ws
+
+proc rentAsync*(self: BitFinexWebSocketPool): Future[BitFinexWebSocket] {.async.}=
+    while true:
+        try:
+            return self.rent(1, throwOnConnectLimit = true)
+        except ConnectLimitError:
+            var w = newFuture[void]("BitFinexWebSocketPool.rentAsync")
+            self.awaiters.addLast(w)
+            yield w
 
 proc shouldClose(n: DoublyLinkedNode[PoolEntry]): bool {.inline.} =
     result = false
@@ -85,6 +113,10 @@ proc `return`*(self: BitFinexWebSocketPool, ws: BitFinexWebSocket, useCount = 1)
                 ws.stop()
                 ws.close()
                 self.pool.remove(n)
+            elif n.value.useCounter == 0:
+                let cpy = n.value
+                self.pool.remove(n)
+                self.pool.prepend(cpy)
             return
     raise Exception.newException("Trying to return a not managed websocket")
 
