@@ -34,7 +34,7 @@ type
         resamplePeriod*: string
         debounceTimeMs*: int
 
-    OrderBookCollectorWebSocketCallback = object
+    OrderBookCollectorWebSocketCallback = ref object
         identifier: string
         expectedOrderBookLength: int
         dbWritter: DatabaseWriter
@@ -43,6 +43,7 @@ type
         debounceTime: MonoTime
         debounceTimeLimit: Duration
         finalizer: proc(success: bool)
+        callCounter: int64
 
     OrderBookCollectorJob* = ref object of BaseJob
         args: OrderBookCollectorJobArgument
@@ -51,8 +52,6 @@ type
         
         resamplePeriod: Duration
         subscriptionPayload: JsonNode
-        callback: Option[OrderBookCollectorWebSocketCallback]
-        callBackVersion: int64
         
 
 func hash*(x: OrderBookCollectorJobArgument): Hash =
@@ -83,7 +82,7 @@ func parseInt(node: JsonNode): int64 =
     else:
         raise Exception.newException(fmt"unable to parse json type {node.kind}")
 
-proc invoke(self: var OrderBookCollectorWebSocketCallback, node: JsonNode) =
+proc invoke(self: OrderBookCollectorWebSocketCallback, node: JsonNode) =
     var ok = false
     try:
         self.orderbook.updateFromJson(node{1})
@@ -101,6 +100,7 @@ proc invoke(self: var OrderBookCollectorWebSocketCallback, node: JsonNode) =
         self.ws.unsubscribeSync(parseInt(node{0}))
         if self.finalizer != nil:
             self.finalizer(ok)
+        inc self.callCounter
 
 func parsePeriod*(period: string): Duration =
     if unlikely(len(period) < 2):
@@ -145,14 +145,15 @@ func identifer(self: OrderBookCollectorJobArgument): string =
 
 const 
     SCHEDULER_MIN_SLEEP_TICK = 250
-    SCHEDULER_JOB_ACTIVE_SLOT = max(FRESHLY_CREATED_WEBSOCKET_LIMIT_PER_MINUTE * BITFINEX_MAX_NUMBER_OF_CHANNEL * 8 div 10, 16)
+    SCHEDULER_JOB_ACTIVE_SLOT = BITFINEX_MAX_NUMBER_OF_CHANNEL * 8 div 10
     SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 32
+    SCHEDULER_JOB_TIMEOUT_MS = 45 * 1000
     JOB_MAX_ERROR_COUNTER = 1024
 
 
 method perform(this: OrderBookCollectorJob) {.async.} =
     let identifier = this.args.identifer()
-    var ws = this.wsPool.rent()
+    var ws = await this.wsPool.rentAsync()
     var returnWs = true
     var cbCalled = newFuture[bool]("OrderBookCollectorJob.perform.cbCalled")
     defer:
@@ -181,63 +182,37 @@ method perform(this: OrderBookCollectorJob) {.async.} =
         if ws != nil:
             ws.unsubscribeSync(-1, this.subscriptionPayload)
 
-    var callBackVersion: int64
-    
-    template versionMatch(): bool = this.callBackVersion == callBackVersion
-
-    template withMatchingVersion(body: untyped) =
-        if versionMatch():
-            body
-
     proc finalizer(success: bool) =
-        try:
-            if not cbCalled.finished():
-                cbCalled.complete(success)
-            if unlikely(not success):
-                inc this.errorCounter
-                unsubscribe()
-            else:
-                this.errorCounter = 0
-                inc this.callBackVersion # we are done with this callback
-        finally:
-            if ws != nil:
-                this.wsPool.`return`(ws)
-                ws = nil
+        if not cbCalled.finished():
+            cbCalled.complete(success)
+        if unlikely(not success):
+            inc this.errorCounter
+            unsubscribe()
+        else:
+            this.errorCounter = 0
 
-    block:
-        let callback = OrderBookCollectorWebSocketCallback(
-            identifier: identifier,
-            dbWritter: this.dbWritter,
-            ws: ws,
-            orderbook: newOrderBook(),
-            debounceTimeLimit: initDuration(milliseconds = this.args.debounceTimeMs),
-            expectedOrderBookLength: this.args.length,
-            finalizer: finalizer
-        )
-
-        inc this.callBackVersion
-        callBackVersion = this.callBackVersion
-        shallowCopy(this.callback, callback.some())
+    let callback = OrderBookCollectorWebSocketCallback(
+        identifier: identifier,
+        dbWritter: this.dbWritter,
+        ws: ws,
+        orderbook: newOrderBook(),
+        debounceTimeLimit: initDuration(milliseconds = this.args.debounceTimeMs),
+        expectedOrderBookLength: this.args.length,
+        finalizer: finalizer
+    )
 
     proc cb(node: JsonNode) =
-        var invoked = false
-        withMatchingVersion:
-            if this.callback.isSome:
-                invoke(this.callback.get(), node)
-                invoked = true
-
-        if not invoked:
+        if callback != nil:
+            callback.invoke(node)
+        if callback.isNil or callback.callCounter == 1:
             var chanId: int64 = -1
             if node.kind == JArray and len(node) > 0 and node{0}.kind == JInt:
                 chanId = parseInt(node{0})
             if ws != nil:
                 ws.unsubscribeSync(chanId, this.subscriptionPayload)
 
-    unsubscribe()
     await ws.subscribe(this.subscriptionPayload, cb)
-    if await withTimeout(cbCalled, 30_000):
-        returnWs = false
-
+    discard await withTimeout(cbCalled, 30_000)
     if cbCalled.finished() and cbCalled.read():
         logger.log(lvlDebug, "completed subscribtion")
     else:
@@ -281,27 +256,40 @@ proc loop*(self: JobScheduler) {.async.} =
             
             if len(jobs) == 0:
                 let first = self.queue[0]
-                let sleepDuration = min(SCHEDULER_MIN_SLEEP_TICK, (first.dueTime - now).inMilliseconds)
+                let sleepDuration = min(SCHEDULER_MIN_SLEEP_TICK, abs(first.dueTime - now).inMilliseconds)
                 await sleepAsync(sleepDuration.float)
                 c = 0
             else:
                 var exceptions = newSeqOfCap[ref Exception](len(jobs))
+                var futures = newSeqOfCap[Future[void]](len(jobs))
+                for (_, _, future) in jobs:
+                    futures.add(future)
+                var inTime: bool
+                try:
+                    inTime = await withTimeout(all futures, SCHEDULER_JOB_TIMEOUT_MS)
+                except:
+                    discard
+                if not inTime:
+                    raise Exception.newException("SCHEDULER_JOB_TIMEOUT")
                 for (job, prevDueTime, future) in jobs:
                     inc c
                     if c >= SCHEDULER_LOOP_YIELD_EVERY_N_TASK:
                         await sleepAsync(0.0) # allow current task to yield
                         c = 0
-                    try:
-                        await future
-                    except:
-                        exceptions.add getCurrentException()
-                    if job.dueTime == prevDueTime:
-                        job.incrementDueTime()
+                    if future.finished():
+                        try:
+                            future.read()
+                        except:
+                            exceptions.add getCurrentException()
+                        if job.dueTime == prevDueTime:
+                            job.incrementDueTime()
                 if len(exceptions) == 1:
                     raise exceptions[0]
                 elif len(exceptions) > 0:
                     # TODO custom aggregate exceptions and better message
-                    raise Exception.newException(fmt"there was {len(exceptions)} errors")
+                    raise Exception.newException(fmt"there was {len(exceptions)} errors", parentException=exceptions[0])
         finally:
             for (job, _, _) in jobs:
                 self.queue.push(job)
+        if (getMonoTime() - now).inMilliseconds < SCHEDULER_MIN_SLEEP_TICK:
+            await sleepAsync(SCHEDULER_MIN_SLEEP_TICK)

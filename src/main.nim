@@ -73,8 +73,7 @@ proc maintainWS(wsPool: BitFinexWebSocketPool, i: int64) {.async.} =
     var tasks = newSeq[Future[void]]()
     for ws in wsPool.websockets():
         if not ws.isRunning and not ws.requestStop:
-            let cpy = ws
-            tasks.add cpy.loop()
+            tasks.add ws.loop()
     await all tasks
 
 when defined(useRealtimeGC):
@@ -89,10 +88,12 @@ proc main() =
     let db = open("bitfinex.db", "", "", "")
     defer:
         db.close()
+    if len(getEnv("SQLITE_WAL", "1")) > 0:
+        db.exec(sql"PRAGMA journal_mode=WAL;")
     let connectionRateLimiterFactory = newConnectionRateLimiterFactory()
     let dbW = newDatabaseWriter(db)
     let wsFactory = BitFinexWebSocketFactory(url: BITFINEX_PUBLIC_WS, rateLimiterFactory: connectionRateLimiterFactory)
-    var wsPool = BitFinexWebSocketPool(factory: wsFactory)
+    var wsPool = newBitFinexWebSocketPool(wsFactory)
     var scheduler = newJobScheduler()
     initScheduler(scheduler, wsPool, dbW)
     asyncCheck scheduler.loop()
