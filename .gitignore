@@ -393,3 +393,6 @@ bitfinex.db
 /release
 *.db-wal
 *.db-shm
+/*.sqlite
+/*.sqlite-shm
+/*.sqlite-wal

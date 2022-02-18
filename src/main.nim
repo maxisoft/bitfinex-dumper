@@ -13,7 +13,9 @@ import bitfinex/databasewriter
 import bitfinex/scheduler
 import std/logging
 import std/httpclient
-
+import std/parseopt
+import std/strformat
+import std/options
 
 const BITFINEX_PUBLIC_WS = "wss://api-pub.bitfinex.com/ws/2"
 
@@ -84,14 +86,138 @@ else:
     proc GC_realtime(strongAdvice = false) {.inline.} =
         discard
 
-proc main() =
-    let db = open("bitfinex.db", "", "", "")
-    defer:
+proc getArgv(): string =
+    when declared(paramStr) and declared(paramCount):
+        for i in 1..paramCount():
+            result.add(paramStr(i))
+            result.add(' ')
+        while len(result) > 0 and result[^1] == ' ':
+            result.setLen(len(result) - 1)
+
+type 
+    CmdArg = object
+        argv: string
+        sqliteWal: bool
+        sqliteRollingPeriod: Duration
+        enableGc: bool
+
+
+proc parseArgv(argv = ""): CmdArg =
+    var cmd = argv
+    if argv == "":
+        cmd = getArgv()
+
+    var p = initOptParser(cmd)
+    result.argv = cmd
+    result.sqliteWal = len(getEnv("SQLITE_WAL", "1")) > 0
+    result.enableGc = true
+    result.sqliteRollingPeriod = initDuration(days=7)
+
+    template checkNoValForArgument() =
+        if p.val != "":
+            let msg = fmt"Argument Error: {p.key} doesn't expect a value"
+            stderr.writeLine(msg)
+            flushStderr()
+            raise Exception.newException(msg)
+
+    for _ in 0..1024:
+        p.next()
+        case p.kind
+        of cmdEnd: break
+        of cmdShortOption, cmdLongOption:
+            let key = p.key.toLower()
+            if key == "wal":
+                result.sqliteWal = true
+                checkNoValForArgument()
+            elif key in ["nowal", "no-wal", "disable-wal"]:
+                result.sqliteWal = false
+                checkNoValForArgument()
+            elif key in ["nogc", "no-gc", "disable-gc"]:
+                result.enableGc = false
+                checkNoValForArgument()
+            elif key in ["dbperiod", "dbrolling"]:
+                let val = p.val.toLower()
+                if val in ["0", "-1", "no", "disable"]:
+                    result.sqliteRollingPeriod = initDuration(0)
+                elif val in ["monthly", "month"]:
+                    result.sqliteRollingPeriod = initDuration(days=31)
+                elif val in ["weekly", "week", "w"]:
+                    result.sqliteRollingPeriod = initDuration(days=7)
+                elif val in ["daily", "day", "d"]:
+                    result.sqliteRollingPeriod = initDuration(days=1)
+                elif val in ["hourly", "hour", "h"]:
+                    result.sqliteRollingPeriod = initDuration(hours=1)
+                else:
+                    result.sqliteRollingPeriod = parsePeriod(p.val)
+            else:
+                let msg = fmt"Argument Error: unexpected key {p.key}"
+                stderr.writeLine(msg)
+                flushStderr()
+                raise Exception.newException(msg)
+        of cmdArgument:
+            discard
+
+const 
+    hourly_format = "yyyy'_'MM'_'dd'__'HH" 
+    daily_format = "yyyy'_'MM'_'dd"
+    monthly_format = "yyyy'_'MM"
+
+    defaultDatabaseName = "bitfinex"
+    defaultDatabaseExt = "sqlite"
+
+proc databaseName(cargs: var CmdArg): string =
+    if cargs.sqliteRollingPeriod <= initDuration(0):
+        return fmt"{defaultDatabaseName}.{defaultDatabaseExt}"
+    var dt: DateTime = now().utc()
+    var dformat = hourly_format
+    var hour = dt.hour.int64 div max(cargs.sqliteRollingPeriod.inHours, 1)
+    hour *= max(cargs.sqliteRollingPeriod.inHours, 1)
+    dt = dateTime(year=dt.year, month=dt.month, monthday=dt.monthday, hour=hour, minute=0, second=0, zone=utc())
+    if cargs.sqliteRollingPeriod >= initDuration(days=30):
+        dt = dateTime(year=dt.year, month=dt.month, monthday=dt.monthday, hour=0, minute=0, second=0, zone=utc())
+        dformat = monthly_format
+    if cargs.sqliteRollingPeriod >= initDuration(days=1):
+        dformat = daily_format
+        var monthday = dt.monthday.int64
+        monthday = monthday div cargs.sqliteRollingPeriod.inDays
+        monthday *= cargs.sqliteRollingPeriod.inDays
+        dt = dateTime(year=dt.year, month=dt.month, monthday=monthday, hour=0, minute=0, second=0, zone=utc())
+    let dtf = dt.format(dformat)
+    return fmt"{defaultDatabaseName}_{dtf}.{defaultDatabaseExt}"
+
+proc openDatabase(name: string, cargs: var CmdArg): DbConn =
+    let db = open(name, "", "", "")
+    try:
+        if cargs.sqliteWal:
+            db.exec(sql"PRAGMA journal_mode=WAL;")
+        else:
+            db.exec(sql"PRAGMA journal_mode=DELETE;")
+    except DbError:
         db.close()
-    if len(getEnv("SQLITE_WAL", "1")) > 0:
-        db.exec(sql"PRAGMA journal_mode=WAL;")
+        raise
+    return db
+
+proc main() =
+    var cargs = parseArgv()
+    var db: Option[DbConn]
+    var prevDbName = ""
+
+    template closeDb() =
+        if db.isSome():
+            if prevDbName != "":
+                logger.log(lvlDebug, "closing database ", prevDbName)
+            if cargs.sqliteWal:
+                # force the db to get back to the delete mode
+                # in order to reduce the number of files
+                db.get().exec(sql"PRAGMA journal_mode=DELETE;")
+            db.get().close()
+            db = Option[DbConn]()
+        
+    defer:
+        closeDb()    
+
     let connectionRateLimiterFactory = newConnectionRateLimiterFactory()
-    let dbW = newDatabaseWriter(db)
+    let dbW = newDatabaseWriter()
     let wsFactory = BitFinexWebSocketFactory(url: BITFINEX_PUBLIC_WS, rateLimiterFactory: connectionRateLimiterFactory)
     var wsPool = newBitFinexWebSocketPool(wsFactory)
     var scheduler = newJobScheduler()
@@ -101,12 +227,11 @@ proc main() =
     when defined(useRealtimeGC):
         GC_setMaxPause(GC_MAX_PAUSE)
         GC_step(GC_MAX_PAUSE, true)
-        if not existsEnv("BD_GC_ENABLE"):
+        if not cargs.enableGc:
             GC_disable()
             logger.log(lvlInfo, "Automatic garbage collector disabled.")
         else:
-            GC_enable()
-            logger.log(lvlInfo, "Automatic garbage collector enabled.")
+            logger.log(lvlDebug, "Automatic garbage collector enabled.")
     while true:
         GC_realtime()
         let iterTime = getMonoTime()
@@ -114,7 +239,13 @@ proc main() =
             flushStderr()
         asyncCheck maintainWS(wsPool, i)
         if dbW.hasWork:
-            dbW.step(150)
+            var dbName = databaseName(cargs)
+            if prevDbName != dbName or db.isNone:
+                logger.log(lvlInfo, "openning database ", dbName)
+                closeDb()
+                db = openDatabase(dbName, cargs).some()
+                prevDbName = dbName
+            dbW.step(db.get(), 150)
         GC_realtime()
         waitFor sleepAsync(100)
         if getMonoTime() - iterTime < initDuration(milliseconds = 300):

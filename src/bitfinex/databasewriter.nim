@@ -38,13 +38,12 @@ type
 
     DatabaseWriter* = ref object
         queue: HeapQueue[DatabaseWriterJob]
-        conn: DbConn
         insertTimeHistory: OrderedTable[string, int64]
+        prevDb: pointer
 
-proc newDatabaseWriter*(db: DbConn): DatabaseWriter =
+proc newDatabaseWriter*(): DatabaseWriter =
     result.new()
     result.queue = initHeapQueue[DatabaseWriterJob]()
-    result.conn = db
     result.insertTimeHistory = initOrderedTable[string, int64]()
 
 proc insertOrderBook*(self: DatabaseWriter, orderbook: OrderBook, identifier: string, startTime: int64 = -1) =
@@ -118,11 +117,19 @@ method perform(this: OrderBookJob, db: DbConn) =
 func hasWork*(self: DatabaseWriter): bool {.inline.} =
     result = len(self.queue) > 0
 
-proc step*(self: DatabaseWriter, maxTimeMs: int = 100) =
+proc step*(self: DatabaseWriter, conn: DbConn, maxTimeMs: int = 100) =
     let startDate = getMonoTime()
     let maxTimeDuration = initDuration(milliseconds = maxTimeMs)
+    var createTable = cast[pointer](conn) != self.prevDb
+    if createTable:
+        self.insertTimeHistory.clear()
+    createTable = createTable and hasWork(self)
     while hasWork(self) and getMonoTime() - startDate < maxTimeDuration:
         let first = self.queue.pop()
-        first.perform(self.conn)
+        first.ctx.createTable = first.ctx.createTable or createTable
+        first.perform(conn)
         self.insertTimeHistory[first.ctx.identifier] = max(first.ctx.time, self.insertTimeHistory.getOrDefault(first.ctx.identifier, 0))
+    
+    if createTable:
+        self.prevDb = cast[pointer](conn)
 
