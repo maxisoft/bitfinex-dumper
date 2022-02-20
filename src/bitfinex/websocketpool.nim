@@ -94,6 +94,22 @@ proc rentAsync*(self: BitFinexWebSocketPool): Future[BitFinexWebSocket] {.async.
             self.awaiters.addLast(w)
             yield w
 
+proc notify(self: BitFinexWebSocketPool, n = 1) =
+    if len(self.awaiters) == 0 or n <= 0:
+        return
+    var waiters = newSeqOfCap[Future[void]](n)
+    while len(self.awaiters) > 0 and len(waiters) < n:
+        let w = self.awaiters.popFirst()
+        if not w.finished:
+            waiters.add(w)
+
+    proc completeAll() =
+        for f in waiters:
+            if not f.finished:
+                f.complete()
+    
+    callSoon(completeAll)
+
 proc shouldClose(n: DoublyLinkedNode[PoolEntry]): bool {.inline.} =
     result = false
     let now = getMonoTime()
@@ -117,11 +133,13 @@ proc `return`*(self: BitFinexWebSocketPool, ws: BitFinexWebSocket, useCount = 1)
                 let cpy = n.value
                 self.pool.remove(n)
                 self.pool.prepend(cpy)
+            notify(self)
             return
     raise Exception.newException("Trying to return a not managed websocket")
 
 proc cleanup*(self: BitFinexWebSocketPool) =
     var stable = false
+    var c = 0
     while not stable:
         stable = true
         for n in nodes(self.pool):
@@ -133,7 +151,25 @@ proc cleanup*(self: BitFinexWebSocketPool) =
                 ws.close()
                 self.pool.remove(n)
                 stable = false
+                inc c
                 break
+    
+    stable = false
+    while len(self.awaiters) > 0 and not stable:
+        stable = true
+        let first = self.awaiters[0]
+        if first.finished:
+            self.awaiters.popFirst()
+            stable = false
+        let last = (if len(self.awaiters) > 0: self.awaiters[^1] else: first)
+        if cast[pointer](first) == cast[pointer](last):
+            break
+        if last.finished:
+            self.awaiters.popLast()
+            stable = false
+
+    notify(self, c)
+
 
 template withWebSocket*(self: BitFinexWebSocketPool, code: untyped) =
     let ws {.inject.} = self.rent()
