@@ -172,15 +172,18 @@ proc databaseName(cargs: var CmdArg): string =
     var dformat = hourly_format
     var hour = dt.hour.int64 div max(cargs.sqliteRollingPeriod.inHours, 1)
     hour *= max(cargs.sqliteRollingPeriod.inHours, 1)
+    hour = hour mod 24
     dt = dateTime(year=dt.year, month=dt.month, monthday=dt.monthday, hour=hour, minute=0, second=0, zone=utc())
     if cargs.sqliteRollingPeriod >= initDuration(days=30):
-        dt = dateTime(year=dt.year, month=dt.month, monthday=dt.monthday, hour=0, minute=0, second=0, zone=utc())
+        dt = dateTime(year=dt.year, month=dt.month, monthday=1, hour=0, minute=0, second=0, zone=utc())
         dformat = monthly_format
     if cargs.sqliteRollingPeriod >= initDuration(days=1):
         dformat = daily_format
-        var monthday = dt.monthday.int64
+        var monthday = max(dt.monthday.int64 - 1, 0)
         monthday = monthday div cargs.sqliteRollingPeriod.inDays
         monthday *= cargs.sqliteRollingPeriod.inDays
+        monthday = monthday mod 31
+        monthday += 1
         dt = dateTime(year=dt.year, month=dt.month, monthday=monthday, hour=0, minute=0, second=0, zone=utc())
     let dtf = dt.format(dformat)
     return fmt"{defaultDatabaseName}_{dtf}.{defaultDatabaseExt}"
