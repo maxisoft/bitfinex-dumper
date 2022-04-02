@@ -60,3 +60,36 @@ jobs:
             --output "type=image,push=true" \
             --file ./docker/Dockerfile . \
             --tag ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest
+
+    - name: Extract binaries
+      if: success() && github.ref == 'refs/heads/main'
+      timeout-minutes: 360
+      run: |
+            set -x
+            docker create -ti --platform linux/amd64 --name dummy_amd64 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest bash
+            docker create -ti --platform linux/arm/v7 --name dummy_armv7 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest bash
+            docker create -ti --platform linux/arm64/v8 --name dummy_arm64 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper:latest bash
+
+            docker cp dummy_amd64:/bin/bitfinex_dumper bitfinex_dumper_linux_amd64
+            docker cp dummy_armv7:/bin/bitfinex_dumper bitfinex_dumper_linux_armv7
+            docker cp dummy_arm64:/bin/bitfinex_dumper bitfinex_dumper_linux_arm64
+
+    - name: Extract binaries
+      if: success() && github.ref != 'refs/heads/main'
+      timeout-minutes: 360
+      run: |
+            set -x
+            docker create -ti --platform linux/amd64 --name dummy_amd64 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper_testing:latest bash
+            docker create -ti --platform linux/arm/v7 --name dummy_armv7 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper_testing:latest bash
+            docker create -ti --platform linux/arm64/v8 --name dummy_arm64 ghcr.io/${{ github.repository_owner }}/bitfinex_dumper/bitfinex_dumper_testing:latest bash
+
+            docker cp dummy_amd64:/bin/bitfinex_dumper bitfinex_dumper_linux_amd64
+            docker cp dummy_armv7:/bin/bitfinex_dumper bitfinex_dumper_linux_armv7
+            docker cp dummy_arm64:/bin/bitfinex_dumper bitfinex_dumper_linux_arm64
+
+    - name: Create artifact
+      uses: actions/upload-artifact@v2
+      if: always()
+      with:
+        name: bitfinex_dumper_docker_builds
+        path: bitfinex_dumper_linux_*
