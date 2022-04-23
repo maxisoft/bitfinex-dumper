@@ -57,7 +57,7 @@ proc initScheduler(scheduler: var JobScheduler, wsPool: BitFinexWebSocketPool, d
     var pairs = listPairs()
     sort(pairs)
     logger.log(lvlInfo, "tracking ", len(pairs), " pairs")
-    let args = [("p1", "5m"), ("p2", "10m"), ("p3", "1h")]
+    let args = [("p1", "5m"), ("p2", "5m"), ("p3", "1h")]
     var dejaVu = initOrderedSet[OrderBookCollectorJobArgument]()
     for (precision, resamplePeriod) in args:
         for pair in pairs:
