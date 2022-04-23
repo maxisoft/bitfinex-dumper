@@ -145,9 +145,9 @@ func identifer(self: OrderBookCollectorJobArgument): string =
 
 const 
     SCHEDULER_MIN_SLEEP_TICK = 250
-    SCHEDULER_JOB_ACTIVE_SLOT = BITFINEX_MAX_NUMBER_OF_CHANNEL * 8 div 10
+    SCHEDULER_JOB_ACTIVE_SLOT = 4 * 1024 #BITFINEX_MAX_NUMBER_OF_CHANNEL * BITFINEX_LIMIT_CONNECTION_PER_MINUTE * 8 div 10
     SCHEDULER_LOOP_YIELD_EVERY_N_TASK = 32
-    SCHEDULER_JOB_TIMEOUT_MS = 45 * 1000
+    SCHEDULER_JOB_TIMEOUT_MS = 60 * 1000
     JOB_MAX_ERROR_COUNTER = 1024
 
 
@@ -221,8 +221,44 @@ method perform(this: OrderBookCollectorJob) {.async.} =
         this.dueTime = max(getMonoTime(), this.dueTime) + initDuration(milliseconds = SCHEDULER_MIN_SLEEP_TICK)
        
 
+var runningMonoTimeDiffMs: int64 = 0
+const 
+    MilliToNanoSeconds = convert(Milliseconds, Nanoseconds, 1.int64)
+    SecondToMilliseconds = convert(Seconds, Milliseconds, 1.int64)
+    runningMonoTimeDiffExponentialMovingAverageSpan: int64 = 10
+
+proc roundMonotime(dueTime: MonoTime, resamplePeriod: Duration, shift_ns: int64 = -100e+9.int64): MonoTime =
+    let now = getMonoTime()
+    let t = getTime()
+    let timestamp = t.toUnixFloat() * SecondToMilliseconds.float
+    var diff = timestamp.int64 - (now.ticks div MilliToNanoSeconds)
+
+    if runningMonoTimeDiffMs == 0:
+        runningMonoTimeDiffMs = diff
+    diff = (runningMonoTimeDiffExponentialMovingAverageSpan - 1) * runningMonoTimeDiffMs + 1 * diff
+    diff = diff div runningMonoTimeDiffExponentialMovingAverageSpan
+    runningMonoTimeDiffMs = diff
+    diff *= MilliToNanoSeconds
+
+    let resampleNs = resamplePeriod.inNanoseconds
+    let dtTicks = dueTime.ticks
+    var ns = (dtTicks + diff) div resampleNs
+    ns *= resampleNs
+    if abs(ns - dtTicks) > resampleNs div 2 and ns < dtTicks:
+        ns += resampleNs
+    while ns - dtTicks < resampleNs div 2:
+        ns += resampleNs
+    ns -= diff
+    ns += shift_ns
+    result = MonoTime() + initDuration(nanoseconds=ns)
+    while result - now < initDuration(0):
+        result = result + resamplePeriod
+
+
 method incrementDueTime(this: OrderBookCollectorJob) =
-    this.dueTime = max(this.dueTime, getMonoTime()) + this.resamplePeriod
+    var dueTime = max(this.dueTime, getMonoTime()) + this.resamplePeriod
+    this.dueTime = roundMonotime(dueTime, this.resamplePeriod)
+    logger.log(lvlInfo, fmt"schedule in {this.dueTime - getMonoTime()}")
 
 type 
     JobScheduler* = ref object
