@@ -258,7 +258,7 @@ proc roundMonotime(dueTime: MonoTime, resamplePeriod: Duration, shift_ns: int64 
 method incrementDueTime(this: OrderBookCollectorJob) =
     var dueTime = max(this.dueTime, getMonoTime()) + this.resamplePeriod
     this.dueTime = roundMonotime(dueTime, this.resamplePeriod)
-    logger.log(lvlInfo, fmt"schedule in {this.dueTime - getMonoTime()}")
+    #logger.log(lvlInfo, fmt"schedule in {this.dueTime - getMonoTime()}")
 
 type 
     JobScheduler* = ref object
