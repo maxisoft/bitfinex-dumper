@@ -100,6 +100,7 @@ type
         sqliteWal: bool
         sqliteRollingPeriod: Duration
         enableGc: bool
+        dbPath: string
 
 
 proc parseArgv(argv = ""): CmdArg =
@@ -149,6 +150,8 @@ proc parseArgv(argv = ""): CmdArg =
                     result.sqliteRollingPeriod = initDuration(hours=1)
                 else:
                     result.sqliteRollingPeriod = parsePeriod(p.val)
+            elif key in ["db", "database"]:
+                result.dbPath = p.val
             else:
                 let msg = fmt"Argument Error: unexpected key {p.key}"
                 stderr.writeLine(msg)
@@ -166,7 +169,12 @@ const
     defaultDatabaseExt = "sqlite"
 
 proc databaseName(cargs: var CmdArg): string =
+    var dbPath = cargs.dbPath
+    if dbPath == "":
+        dbPath = getEnv("DBPATH", "")
     if cargs.sqliteRollingPeriod <= initDuration(0):
+        if dbPath != "":
+            return dbPath
         return fmt"{defaultDatabaseName}.{defaultDatabaseExt}"
     var dt: DateTime = now().utc()
     var dformat = hourly_format
@@ -186,7 +194,15 @@ proc databaseName(cargs: var CmdArg): string =
         monthday += 1
         dt = dateTime(year=dt.year, month=dt.month, monthday=monthday, hour=0, minute=0, second=0, zone=utc())
     let dtf = dt.format(dformat)
-    return fmt"{defaultDatabaseName}_{dtf}.{defaultDatabaseExt}"
+    
+    if dbPath != "":
+        if not fileExists(dbPath):
+            createDir(dbPath)
+        elif not dirExists(dbPath):
+            return dbPath
+    if dbPath == "":
+        dbPath = fmt"{CurDir}"
+    return fmt"{dbPath}{DirSep}{defaultDatabaseName}_{dtf}.{defaultDatabaseExt}"
 
 proc openDatabase(name: string, cargs: var CmdArg): DbConn =
     let db = open(name, "", "", "")
