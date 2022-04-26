@@ -19,8 +19,6 @@ from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 
 from typing import Any, Callable, Collection, List, Union
 
-from injector import T
-
 logger = logging.getLogger("bitfinex.databases.compress")
 
 
