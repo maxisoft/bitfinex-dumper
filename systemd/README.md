@@ -49,3 +49,7 @@ mkdir -p /opt/bitfinexdumper/scripts
 cp ../scripts/compress_databases.py /opt/bitfinexdumper/scripts
 chmod +x /opt/bitfinexdumper/scripts/compress_databases.py
 cp bitfinexdumper-compress-databases.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable bitfinexdumper-compress-databases.timer
+systemctl start bitfinexdumper-compress-databases.timer
+
