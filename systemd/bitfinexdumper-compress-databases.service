@@ -1,0 +1,7 @@
+[Unit]
+Description=Compress bitfinex database
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bitfinexdumper/scripts/compress_databases.py
+WorkingDirectory=/var/bitfinexdumper

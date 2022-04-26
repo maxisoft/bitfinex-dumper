@@ -1,0 +1,9 @@
+[Unit]
+Description=Compress bitfinexdumper's database every weeks
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,39 @@
+[Unit]
+Description=Dump bitfinex data into a database
+After=network.target
+
+[Service]
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=1024
+ExecStart=/usr/bin/podman start -a bitfinexdumper
+ExecStop=/usr/bin/podman stop -t 2 bitfinexdumper
+
+ReadWritePaths=/var/bitfinexdumper
+
+PrivateTmp=no
+ProtectHome=yes
+#ProtectProc=invisible
+#PrivateIPC=true
+#ProtectHostname=true
+#ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+
+
+## Uncomment and fine tune cpu / io priority
+#CPUWeight=20
+#CPUQuota=85%
+#IOWeight=20
+#MemorySwapMax=5%
+#MemoryAccounting=true
+#MemoryHigh=56M
+#MemoryMax=256M
+#OOMScoreAdjust=900
+#Nice=10
+#CPUSchedulingPolicy=idle
+#IOSchedulingClass=idle
+
+[Install]
+WantedBy = multi-user.target
