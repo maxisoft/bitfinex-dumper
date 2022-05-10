@@ -4,6 +4,7 @@ This script compress oldest bitfinex databases into multiple zip files.
 Usage: ./compress_databases.py path/to/databases
 """
 from asyncio import as_completed
+from collections import OrderedDict
 import importlib
 import re
 import sys
@@ -16,16 +17,18 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
+from subprocess import check_call, CalledProcessError, DEVNULL
 
 from typing import Any, Callable, Collection, List, Union
 
 logger = logging.getLogger("bitfinex.databases.compress")
 
+_false_env_parser = {'', '0', 'false', 'no', False, None}
 
 def _compression_mode():
-    if os.environ.get("COMPRESS_DEFLATE", False) not in ('', '0', 'false', 'no', False, None):
+    if os.environ.get("COMPRESS_DEFLATE", False) not in _false_env_parser:
         return zipfile.ZIP_DEFLATED
-    if os.environ.get("COMPRESS_BZIP2", False) not in ('', '0', 'false', 'no', False, None):
+    if os.environ.get("COMPRESS_BZIP2", False) not in _false_env_parser:
         return zipfile.ZIP_BZIP2
 
     try:
@@ -35,12 +38,44 @@ def _compression_mode():
 
     return zipfile.ZIP_LZMA if lzma else zipfile.ZIP_DEFLATED
 
+_has_btrfs = os.environ.get("BTRFS_COMPRESSION", None)
+
+def _compress_with_btrfs(p: Path):
+    global _has_btrfs
+    if _has_btrfs is None or _has_btrfs not in _false_env_parser:
+        try:
+            check_call(f"btrfs property set \"{p.resolve()}\" compression zstd:{os.environ.get('ZSTD_LEVEL', 9)}", shell=True, stdout=DEVNULL, stderr=DEVNULL)
+        except (CalledProcessError, FileNotFoundError):
+            if _has_btrfs is None:
+                _has_btrfs = False
+            return False
+        try:
+            check_call(f"btrfs filesystem defrag \"{p.resolve()}\"", shell=True, stdout=DEVNULL)
+        except CalledProcessError:
+            return False
+
+        return True
+    
+    return False
+
 def compress_file(p: Path):
     assert p.is_file()
-    with zipfile.ZipFile(
-        str(p) + ".zip", "w", compression=_compression_mode()
-    ) as out:
-        out.write(str(p.resolve()), p.name)
+    if _compress_with_btrfs(p):
+        return
+    
+    zip_file_path = Path(str(p) + ".zip")
+    exists_before = zip_file_path.exists()
+    prev_st_size = zip_file_path.stat() if exists_before else 0
+    try:
+        with zipfile.ZipFile(
+            str(zip_file_path), "w", compression=_compression_mode()
+        ) as out:
+            out.write(str(p.resolve()), p.name)
+    except:
+        if zip_file_path.exists():
+            if not exists_before or zip_file_path.stat().st_size != prev_st_size or zip_file_path.stat().st_size <= 0:
+                zip_file_path.unlink()
+        raise
 
 
 def list_file(p: Path, patterns=("**/*.sqlite",)):
@@ -143,7 +178,9 @@ def main(*paths: Collection[Union[str, Path]]):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    if len(sys.argv):
-        main(*sys.argv)
+    search_paths = OrderedDict((Path(p), p) for p in (sys.argv or ' ')[1:] if p)
+
+    if search_paths:
+        main(*search_paths.keys())
     else:
         main(Path())
