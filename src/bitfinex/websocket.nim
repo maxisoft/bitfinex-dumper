@@ -9,6 +9,7 @@ import std/options
 import std/logging
 import std/deques
 import std/strutils
+import std/atomics
 import asynctools/asyncsync
 
 let logLevel = when defined(release):
@@ -53,7 +54,7 @@ type
         connectLock: AsyncLock
         pendingSubscriptionLock: AsyncLock
         connectAwaiters: Deque[Future[void]]
-        recvFuture: Future[string]
+        recvFuture: Atomic[Future[string]]
         rateLimiterFactory: ConnectionRateLimiterFactory
 
 func popFirst[T](self: var OrderedSet[T]): T =
@@ -75,9 +76,11 @@ proc close*(self: BitFinexWebSocket) =
     self.unsubscribeQueue.clear()
     self.buggySubscriptions.clear()
     self.activeBuggySubscriptions.clear()
-    if self.recvFuture != nil:
-        self.recvFuture.callback= proc () = discard
-        self.recvFuture = nil
+    var recvFuture: Future[string] = nil
+    if not self.recvFuture.compareExchange(recvFuture, nil):
+        if recvFuture != nil and not recvFuture.finished():
+            recvFuture.fail(Exception.newException("closing websocket"))
+        self.recvFuture.store(nil)
 
 proc finalizer(self: BitFinexWebSocket) = 
     close(self)
@@ -453,36 +456,51 @@ proc stop*(self: BitFinexWebSocket) =
     self.requestStop = true
 
 proc receiveStrPacket(self: BitFinexWebSocket, ws: WebSocket, timeoutMs: int = 100): Future[string] {.async.} =
-    ## Receive a string packet within timeout 
-    ## No strict garanty that the task ends within timeout, just best effort
+    ## Try receiving a string packet within timeout 
     ## Returns empty if no packet has been sent to us (or if the underlaying call returns empty)
-    if self.recvFuture.isNil:
-        self.recvFuture = ws.receiveStrPacket()
+    var recv: Future[string] = nil
+    var prevRecv = self.recvFuture.load
+    if prevRecv.isNil:
+        var expected: Future[string] = nil
+        recv = ws.receiveStrPacket()
+        if not self.recvFuture.compareExchange(expected, recv):
+            let ex = Exception.newException("2+ websocket readers is forbidden")
+            if not recv.finished():
+                recv.fail(ex)
+            raise ex
+    elif prevRecv.finished():
+        if not prevRecv.failed:
+            result = prevRecv.read()
+        if not self.recvFuture.compareExchange(prevRecv, nil):
+            raise Exception.newException("2+ websocket readers is forbidden")
+        else:
+            prevRecv = nil
+    else:
+        assert prevRecv != nil
+        assert recv == nil
+        recv = prevRecv
 
-    let recv = self.recvFuture
-
-    template readAndCleanup() =
+    proc readAndCleanup(): string =
         try:
             result = recv.read()
         finally:
             # check that recvFuture hasn't changed
-            if cast[pointer](recv) == cast[pointer](self.recvFuture):
-                self.recvFuture = nil
+            if not self.recvFuture.compareExchange(recv, nil):
+                raise Exception.newException("2+ websocket readers is forbidden")
+    
+    if recv.isNil:
+        return ""
 
     if recv.finished():
-        readAndCleanup()
+        result = readAndCleanup()
     elif await withTimeout(recv, timeoutMs):
-        if cast[pointer](recv) == cast[pointer](self.recvFuture):
-            readAndCleanup()
-        else:
-            result = recv.read()
-    elif self.recvFuture.isNil:
-        self.recvFuture = recv
-    elif cast[pointer](recv) != cast[pointer](self.recvFuture):
-        # have to wait as another task replaced recvFuture
-        # before this current task
-        result = await recv
-        # TODO use a queue to avoid awaiting ?
+        result = readAndCleanup()
+    else:
+        if not self.recvFuture.compareExchange(prevRecv, recv) and prevRecv != recv:
+            let ex = Exception.newException("2+ websocket readers is forbidden")
+            if not recv.finished():
+                recv.fail(ex)
+            raise ex
                 
 proc loop*(self: BitFinexWebSocket) {.async.} =
     if self.running:
