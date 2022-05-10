@@ -16,7 +16,7 @@ jobs:
     - run: nim c --cc:vcc -r tests/all.nim
     - run: nim c --cc:vcc -d:release -r tests/all.nim
     - run: nim c --cc:vcc -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --define:useRealtimeGC -o:bitfinex_dumper ./src/main.nim
-    - run: nim cpp --cc:vcc -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --define:useRealtimeGC -o:bitfinex_dumper_cpp ./src/main.nim
+    #- run: nim cpp --cc:vcc -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --define:useRealtimeGC -o:bitfinex_dumper_cpp ./src/main.nim
     - name: Create artifact
       uses: actions/upload-artifact@v2
       if: always()
