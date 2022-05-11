@@ -8,7 +8,7 @@ This is a rewritting of a python version into a more standalone, lightweight and
 
 ## Requirement
 A standard working nim environment with
-- recent nim version (tested with nim 1.6)
+- recent nim version (tested with nim 1.6.6)
 - C compiler
 - nimble
 - sqlite devel lib
@@ -21,7 +21,7 @@ nimble install ws asynctools sorta
 
 ## Compilation
 ```sh
-nim c -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --define:useRealtimeGC -o:bitfinex_dumper ./src/main.nim
+nim c -d:release --stackTrace:on --opt:speed -d:ssl --app:console --filenames:canonical --mm:orc --styleCheck:hint --showAllMismatches:on -o:bitfinex_dumper ./src/main.nim
 ```
 
 ## Usage
