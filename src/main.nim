@@ -161,9 +161,9 @@ proc parseArgv(argv = ""): CmdArg =
             discard
 
 const 
-    hourly_format = "yyyy'_'MM'_'dd'__'HH" 
-    daily_format = "yyyy'_'MM'_'dd"
-    monthly_format = "yyyy'_'MM"
+    hourlyFormat = "yyyy'_'MM'_'dd'__'HH" 
+    dailyFormat = "yyyy'_'MM'_'dd"
+    monthlyFormat = "yyyy'_'MM"
 
     defaultDatabaseName = "bitfinex"
     defaultDatabaseExt = "sqlite"
@@ -177,16 +177,16 @@ proc databaseName(cargs: var CmdArg): string =
             return dbPath
         return fmt"{defaultDatabaseName}.{defaultDatabaseExt}"
     var dt: DateTime = now().utc()
-    var dformat = hourly_format
+    var dformat = hourlyFormat
     var hour = dt.hour.int64 div max(cargs.sqliteRollingPeriod.inHours, 1)
     hour *= max(cargs.sqliteRollingPeriod.inHours, 1)
     hour = hour mod 24
     dt = dateTime(year=dt.year, month=dt.month, monthday=dt.monthday, hour=hour, minute=0, second=0, zone=utc())
     if cargs.sqliteRollingPeriod >= initDuration(days=30):
         dt = dateTime(year=dt.year, month=dt.month, monthday=1, hour=0, minute=0, second=0, zone=utc())
-        dformat = monthly_format
+        dformat = monthlyFormat
     if cargs.sqliteRollingPeriod >= initDuration(days=1):
-        dformat = daily_format
+        dformat = dailyFormat
         var monthday = max(dt.monthday.int64 - 1, 0)
         monthday = monthday div cargs.sqliteRollingPeriod.inDays
         monthday *= cargs.sqliteRollingPeriod.inDays
