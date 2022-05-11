@@ -443,14 +443,13 @@ proc processUnsubscribeQueue(self: BitFinexWebSocket, limit = 32) {.async.} =
         if c >= limit:
             break
     try:
-        await all tasks
-    except:
+        yield withTimeout(all tasks, 30_000)
+    finally:
         for i in tasks.low..tasks.high:
             let fut = tasks[i]
             if not fut.finished():
-                yield fut # discard but the future may complete later
+                fut.fail(Exception.newException(""))
                 self.unsubscribeQueue.addLast(chanIds[i]) # retry later
-        raise
 
 proc stop*(self: BitFinexWebSocket) =
     self.requestStop = true
