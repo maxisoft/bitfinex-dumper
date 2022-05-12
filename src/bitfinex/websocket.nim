@@ -470,16 +470,20 @@ proc receiveStrPacket(self: BitFinexWebSocket, ws: WebSocket, timeoutMs: int = 1
     elif prevRecv.finished():
         if not prevRecv.failed:
             result = prevRecv.read()
+        else:
+            logger.log(lvlError, "ws.recv() error ", prevRecv.errorStackTrace)
+            self.close()
+            raise Exception.newException("connection closed while reading ws", prevRecv.error)
         if not self.recvFuture.compareExchange(prevRecv, nil):
             raise Exception.newException("2+ websocket readers is forbidden")
         else:
-            prevRecv = nil
+            return result
     else:
         assert prevRecv != nil
         assert recv == nil
         recv = prevRecv
 
-    proc readAndCleanup(): string =
+    template readAndCleanup() =
         try:
             result = recv.read()
         finally:
@@ -488,18 +492,35 @@ proc receiveStrPacket(self: BitFinexWebSocket, ws: WebSocket, timeoutMs: int = 1
                 raise Exception.newException("2+ websocket readers is forbidden")
     
     if recv.isNil:
-        return ""
+        return
 
     if recv.finished():
-        result = readAndCleanup()
-    elif await withTimeout(recv, timeoutMs):
-        result = readAndCleanup()
+        readAndCleanup()
+        return
+    
+    proc timeoutRead() {.async.} =
+        if await withTimeout(recv, timeoutMs):
+           readAndCleanup()
+        else:
+            while not self.recvFuture.compareExchangeWeak(prevRecv, recv):
+                if prevRecv.isNil or prevRecv.finished():
+                    continue
+                elif prevRecv == recv:
+                    break
+                else:
+                    let ex = Exception.newException("2+ websocket readers is forbidden")
+                    if not recv.finished():
+                        recv.fail(ex)
+
+    
+    var f = timeoutRead()
+    yield f
+    if recv.finished():
+        if not self.recvFuture.compareExchange(recv, nil):
+            if not recv.isNil:
+                raise Exception.newException("2+ websocket readers is forbidden")
     else:
-        if not self.recvFuture.compareExchange(prevRecv, recv) and prevRecv != recv:
-            let ex = Exception.newException("2+ websocket readers is forbidden")
-            if not recv.finished():
-                recv.fail(ex)
-            raise ex
+        doAssert self.recvFuture.compareExchange(recv, recv)
                 
 proc loop*(self: BitFinexWebSocket) {.async.} =
     if self.running:
