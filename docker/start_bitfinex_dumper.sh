@@ -1,5 +1,5 @@
 #!/bin/sh
-set -x
+set -e
 PUID=${PUID:-912}
 usermod -u "$PUID" "${BITFINEX_USER_NAME:-bitfinexdumper}"
 PGID=${PGID:-912}
