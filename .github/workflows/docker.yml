@@ -32,7 +32,7 @@ jobs:
             CI=true dive --ci-config "${{ github.workspace }}/.dive-ci" bitfinex_dumper_testing
 
     -
-      name: run the container for 60 sec
+      name: Run and test the container for 60 sec
       shell: python
       run: |
             import subprocess
@@ -41,7 +41,7 @@ jobs:
             try:
               subprocess.check_call(r"docker run --rm bitfinex_dumper_testing", shell=True, timeout=60)
             except (subprocess.TimeoutExpired, TimeoutError):
-              sys.exit(0)
+              sys.exit(0) # this is expected behavior
             else:
               raise RuntimeError("docker container exited")
 
